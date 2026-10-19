@@ -12,6 +12,44 @@
 
 (function () {
   var MOD = '/data/adb/modules/cirno_reclaim';
+  var CTL = 'sh ' + MOD + '/bin/ctl.sh';
+  var QUOTED = { include_packages: 1, exclude_packages: 1 };
+  var REPO = 'https://github.com/yishisanren/cirno-reclaim';
+
+  var isKsu = !!(window.ksu && typeof window.ksu.exec === 'function');
+
+  /* ------------------------------------------------------------ 基础工具 */
+
+  var cbSeq = 0;
+
+  function sh(cmd) {
+    if (!isKsu) return Promise.reject(new Error('缺少 root 接口'));
+    return new Promise(function (resolve) {
+      var name = 'crExecCb' + Date.now() + '_' + (cbSeq++);
+      var timer = setTimeout(function () {
+        delete window[name];
+        resolve({ errno: -1, stdout: '', stderr: '执行超时' });
+      }, 120000);
+      window[name] = function (errno, stdout, stderr) {
+        clearTimeout(timer);
+        delete window[name];
+        resolve({ errno: Number(errno) || 0, stdout: stdout || '', stderr: stderr || '' });
+      };
+      try {
+        window.ksu.exec(cmd, '{}', name);
+      } catch (e) {
+        // 老版本管理器只有同步的 exec(cmd)
+        clearTimeout(timer);
+        delete window[name];
+        var r = window.ksu.exec(cmd);
+        if (r && typeof r.then === 'function') {
+          r.then(function (v) { resolve(norm(v)); });
+        } else {
+          resolve(norm(r));
+        }
+      }
+    });
+  }
   var CTL = MOD + '/bin/ctl.sh';
   var CONF = '/data/adb/cirno_reclaim/config.conf';
   var SH = '/system/bin/sh';
@@ -193,6 +231,38 @@
     $('dvKills').textContent = num(s.total_kills);
     $('dvFreed').textContent = num(s.total_freed) + ' MB';
 
+    var hint = $('hintLine');
+    if (num(s.dry_run) === 1) {
+      hint.className = 'hint warn';
+      hint.textContent = '演练模式：只记录不动手。观察日志没问题后，到「设置」关闭演练模式';
+    } else if (num(s.cgroup) !== 1) {
+      hint.className = 'hint warn';
+      hint.textContent = '没找到冻结进程所在的位置：Cirno 可能没在运行，模块不会动作';
+    } else if (num(s.pageout) === 1) {
+      hint.className = 'hint';
+      hint.textContent = '内存紧张时：先把冻结的应用压进 zram，不够再结束最大的';
+    } else {
+      hint.className = 'hint warn';
+      hint.textContent = '页换出不可用（内核不支持），内存紧张时只能结束冻结的应用';
+    }
+
+    $('stPaged').textContent = num(s.total_paged);
+    $('stKills').textContent = num(s.total_kills);
+    $('stFreed').textContent = num(s.total_freed);
+    $('stHb').textContent = num(s.hb_age) >= 999999 ? '--' : num(s.hb_age) + 's';
+
+    if (num(s.last_run) > 0) {
+      var age = Math.max(0, Math.floor(Date.now() / 1000) - num(s.last_run));
+      $('lastRun').textContent = ago(age);
+      $('lastInfo').textContent =
+        '压缩 ' + num(s.last_paged) + ' MB · 结束 ' + num(s.last_kills) + ' 个进程 · 可用 +' +
+        num(s.last_freed) + ' MB' + (s.last_reason ? ' · 触发: ' + s.last_reason : '');
+    } else {
+      $('lastInfo').textContent = '还没有执行过回收（守护会在内存偏低时自动执行）';
+    }
+
+    document.querySelectorAll('.chip[data-preset]').forEach(function (c) {
+      c.classList.toggle('active', c.dataset.preset === s.profile);
     if (num(s.pageout) === 1) {
       $('hintLine').className = 'hint';
       $('hintLine').textContent = '页换出可用：前台可把匿名页换到 zram';
@@ -237,10 +307,11 @@
     });
   }
 
-  function doRun(el) {
-    withBusy(el, sh('run --json'), function (j) {
-      if (j.skipped) return '跳过：' + (j.reason || '');
-      return '释放 ' + j.freed + ' MB，回收 ' + j.kills + ' 个进程';
+  function doRun(btn) {
+    withBusy(btn, sh(CTL + ' run --json'), function (j) {
+      if (j.skipped) return '本次跳过：' + (j.reason || '');
+      if (num(j.dry_run) === 1) return '演练完成：会做的事已写进日志';
+      return '压缩 ' + num(j.paged) + ' MB，结束 ' + num(j.kills) + ' 个进程，可用 +' + num(j.freed) + ' MB';
     });
   }
 
@@ -309,18 +380,20 @@
 
   /* ------------------------------------------------------------ 配置 */
   var BASIC = [
-    { k: 'enable', t: 'switch', label: '启用模块', hint: '关闭后不再回收（VM 调参也会停）' },
+    { k: 'dry_run', t: 'switch', label: '演练模式', hint: '只记录不动手；首次安装默认开' },
+    { k: 'enable', t: 'switch', label: '启用模块', hint: '关闭后守护仍在跑，但不再回收' },
     { k: 'mem_low_mb', t: 'number', label: '触发阈值', unit: 'MB', hint: '可用内存低于它就回收' },
     { k: 'mem_target_mb', t: 'number', label: '目标内存', unit: 'MB' },
     { k: 'max_kills_per_run', t: 'number', label: '单轮最多', unit: '个' },
     { k: 'max_kills_per_hour', t: 'number', label: '每小时上限', unit: '个' },
     { k: 'min_frozen_min', t: 'number', label: '至少冻结', unit: '分钟' },
     { k: 'min_process_mb', t: 'number', label: '忽略小进程', unit: 'MB' },
-    { k: 'app_reclaim', t: 'switch', label: '前台舒缓' },
-    { k: 'app_pss_mb', t: 'number', label: '前台阈值', unit: 'MB' },
-    { k: 'app_pageout', t: 'switch', label: '前台页换出' },
+    { k: 'deep_reclaim', t: 'switch', label: '压缩冻结应用', hint: '先把冻结的应用压进 zram，进程不死' },
+    { k: 'deep_pageout_max_mb', t: 'number', label: '单次压缩上限', unit: 'MB' },
+    { k: 'app_reclaim', t: 'switch', label: '前台舒缓', hint: '只在内存紧张时处理正在用的应用' },
+    { k: 'app_pss_mb', t: 'number', label: '前台阈值', unit: 'MB', hint: '前台应用超过就舒缓' },
     { k: 'screen_off_only', t: 'switch', label: '仅息屏回收' },
-    { k: 'dry_run', t: 'switch', label: '演练模式', hint: '只记录，不杀也不 trim' }
+    { k: 'app_pageout', t: 'switch', label: '前台页换出', hint: '紧张时把少量匿名页换到 zram' }
   ];
 
   var ADVANCED = [
@@ -333,8 +406,10 @@
     { k: 'only_frozen', t: 'switch', label: '只回收已冻结进程' },
     { k: 'kill_mode', t: 'select', label: '回收方式', options: [['pid', '精确 PID'], ['am', 'am kill 整包']] },
     { k: 'protect_foreground', t: 'switch', label: '保护前台应用' },
-    { k: 'deep_reclaim', t: 'switch', label: '深回收' },
-    { k: 'deep_pageout_max_mb', t: 'number', label: '深回收上限', unit: 'MB' },
+    {
+      k: 'reclaim_order', t: 'select', label: '回收顺序',
+      options: [['pageout_first', '先压缩后结束'], ['kill_first', '先结束后压缩']]
+    },
     { k: 'drop_caches', t: 'switch', label: '清页缓存' },
     { k: 'drop_caches_cooldown', t: 'number', label: '清页缓存冷却', unit: '秒' },
     { k: 'psi_enable', t: 'switch', label: 'PSI 压力触发' },
@@ -350,10 +425,9 @@
     { k: 'app_trim_all_pids', t: 'switch', label: 'trim 全部进程' },
     { k: 'app_pageout_max_mb', t: 'number', label: '前台换出上限', unit: 'MB' },
     { k: 'app_pageout_passes', t: 'number', label: '前台换出轮数' },
-    { k: 'daemon_engine', t: 'select', label: '守护引擎', options: [['cpp', 'C++（推荐）'], ['shell', 'Shell（兼容）']] },
-    { k: 'vm_tune', t: 'switch', label: 'VM 调参' },
-    { k: 'zram_enable', t: 'switch', label: '启用 zram' },
-    { k: 'zram_disksize_mb', t: 'number', label: 'zram 大小', unit: 'MB' },
+    { k: 'vm_tune', t: 'switch', label: 'VM 调参', hint: 'ColorOS 自己会调，建议保持关闭' },
+    { k: 'zram_enable', t: 'switch', label: '启用 zram', hint: 'ColorOS 上无效（不碰内存扩展）' },
+    { k: 'zram_disksize_mb', t: 'number', label: 'zram 大小', unit: 'MB', hint: '0 = 自动（内存一半）' },
     {
       k: 'zram_algorithm', t: 'select', label: 'zram 算法',
       options: [['lz4', 'lz4（快）'], ['lz4hc', 'lz4hc'], ['zstd', 'zstd'], ['lzo-rle', 'lzo-rle']]
@@ -578,13 +652,17 @@
     });
   }
 
-  function doCopyDiag(el) {
-    if (!isKsu) { toast('请在 KernelSU / KsuWebUI 中打开', true); return; }
-    el.disabled = true;
-    doDoctorForCopy().then(function (text) {
-      if (!text) throw new Error('自检为空');
-      $('doctorOut').textContent = text;
-      return copyText(text);
+  function doCopyDiag(btn) {
+    if (!isKsu) { toast('请在 KernelSU / KsuWebUI 中打开本页面', true); return; }
+    btn.disabled = true;
+    loadDiag(true).then(function (text) {
+      if (!text) throw new Error('empty');
+      return copyText(text).then(function () {
+        toast('诊断信息已复制');
+      });
+    }).catch(function (e) {
+      toast('复制失败，请长按下方文本手动复制：' + e.message, true);
+      $('diagOut').parentElement.open = true;
     }).then(function () {
       toast('诊断信息已复制');
     }).catch(function (e) {
@@ -592,23 +670,11 @@
     }).then(function () { el.disabled = false; });
   }
 
-  function doMail(el) {
-    el.disabled = true;
-    doDoctorForCopy().then(function (text) {
-      var ver = ($('ver').textContent || '').trim();
-      var body = [
-        '问题描述：', '', '',
-        '复现步骤：', '1. ', '2. ', '',
-        '--- 自检 / 诊断 ---',
-        (text || '').slice(0, 2400),
-        '',
-        '（如被截断，请把「复制诊断」的完整内容粘贴到这里）'
-      ].join('\n');
-      var url = 'mailto:' + MAIL +
-        '?subject=' + encodeURIComponent('[Cirno Reclaim ' + ver + '] 问题反馈') +
-        '&body=' + encodeURIComponent(body);
-      window.location.href = url;
-      el.disabled = false;
+  function doCopyRepo() {
+    copyText(REPO + '/issues').then(function () {
+      toast('链接已复制，用浏览器打开即可');
+    }).catch(function () {
+      toast('复制失败，请手动记下：' + REPO, true);
     });
   }
 
@@ -776,23 +842,8 @@
     $('btnScan').addEventListener('click', function () { doScan(this); });
     $('btnRestart').addEventListener('click', function () { doRestart(this); });
     $('btnSave').addEventListener('click', function () { saveConfig(this); });
-
-    // 事件委托：开关是动态生成的，绑在 document 上
-    document.addEventListener('change', function (e) {
-      var el = e.target;
-      if (el && el.tagName === 'INPUT' && el.classList.contains('sw') && el.dataset.k) {
-        autoSaveSwitch(el);
-      }
-    });
-    $('btnLogRefresh').addEventListener('click', function () { loadLog(); toast('日志已刷新'); });
-    $('btnDoctor').addEventListener('click', function () { doDoctor(this); });
-    $('btnMail').addEventListener('click', function () { doMail(this); });
     $('btnCopyDiag').addEventListener('click', function () { doCopyDiag(this); });
-
-    $('chipProfile').addEventListener('click', function () { showPage('scene'); });
-    $('chevPanel').addEventListener('click', function () {
-      document.querySelector('.panel').classList.toggle('collapsed');
-    });
+    $('btnCopyRepo').addEventListener('click', function () { doCopyRepo(); });
 
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (b) {
       b.addEventListener('click', function () { showPage(b.dataset.page); });

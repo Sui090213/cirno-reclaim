@@ -7,7 +7,10 @@
 #    1. 对该包「所有」进程都发 send-trim-memory，而不只是主进程；
 #    2. 页换出分多轮（app_pageout_passes），每轮重新读 smaps，按当前 PSS 分配预算；
 #    3. 换出后重新测 PSS，日志里直接给出 before/after，方便判断是否真的有效；
-#    4. helper 不可用时自动降级为纯 trim，不影响启动。
+#    4. helper 不可用时自动降级为纯 trim，不影响启动；
+#    5. 自动触发只在内存真的紧张时（低于触发阈值或 PSI 超标）才动手。
+#       内存充足时压前台应用换不来任何好处，只会让正在用的应用缺页卡顿。
+#       换出量受 app_pageout_max_mb 严格限制（helper 按实际常驻匿名页记账）。
 #
 #  用法：app_relief.sh [--force] [--json]
 # ============================================================================
@@ -39,6 +42,23 @@ emit_json() {
     "$1" "${_pkg:-}" "${_before:-0}" "${_after:-0}" "${_freed:-0}" "${_pss_before_mb:-0}" "${_pss_after_mb:-0}" \
     "${_threads:-0}" "${app_trim_level:-RUNNING_LOW}" "${_po_bytes:-0}"
 }
+
+# 内存不紧张就什么都不做（--force 是用户手动点的，照做）
+if [ "$FORCE" != "1" ]; then
+  _pressure=0
+  [ "$(mem_avail_mb)" -lt "$(mem_low_threshold_mb)" ] && _pressure=1
+  if [ "$_pressure" = "0" ] && [ "${psi_enable:-1}" = "1" ]; then
+    _psi=$(psi_some_avg10)
+    if [ "$_psi" != "-1" ] && awk -v a="$_psi" -v b="${psi_some_avg10:-25}" 'BEGIN { exit !(a + 0 > b + 0) }'; then
+      _pressure=1
+    fi
+  fi
+  if [ "$_pressure" = "0" ]; then
+    _before=$(mem_avail_mb); _after=$_before; _freed=0
+    emit_json 1
+    exit 0
+  fi
+fi
 
 _pkg=$(fg_pkg_cached)
 if [ -z "$_pkg" ]; then

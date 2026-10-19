@@ -3,8 +3,15 @@
  *
  * 原理：pidfd_open(2) + process_madvise(2) + MADV_PAGEOUT
  *   1. 打开目标进程的 pidfd（需要 CAP_SYS_PTRACE，root 有）；
- *   2. 解析 /proc/<pid>/smaps，只挑可写、私有的匿名映射；
- *   3. 按 1MB 分块提交 MADV_PAGEOUT，避免单次 iovec 过大被内核拒绝。
+ *   2. 解析 /proc/<pid>/smaps，只挑可写、私有、有常驻匿名页的映射；
+ *   3. 按「常驻匿名页」分配预算，按 1MB 分块提交 MADV_PAGEOUT；
+ *   4. 用 VmSwap 前后差值报告真正换出的字节数。
+ *
+ * 为什么按常驻匿名页算预算、按 VmSwap 报结果：
+ *   process_madvise 的返回值是「建议过的地址范围长度」，不是实际换出量。
+ *   映射里没有常驻的部分、没有 swap 时，它照样返回整段长度。
+ *   早先版本用返回值记账，导致 --max-mb 形同虚设（一次换出远超预算），
+ *   没有 swap 的机器上也会报告几百 MB 的「换出」。
  *
  * 安全边界：
  *   - 只处理匿名页（Anonymous > 0），不碰文件映射的代码/资源；
@@ -13,7 +20,10 @@
  *
  * 用法：
  *   cirno_pageout --probe                 # 探测内核是否支持，0 = 支持
- *   cirno_pageout --pid <pid> --max-mb 64 # 换出，最多 64MB，输出实际字节数
+ *   cirno_pageout --pid <pid> --max-mb 64 # 换出，最多 64MB，输出实际换出的字节数
+ *   cirno_pageout --pid <pid> --include-art
+ *                                         # 连 ART 堆一起换出（只用于已冻结的进程，
+ *                                         # 与 Android 对缓存进程做的 full compaction 一致）
  *   cirno_pageout --pid <pid> --list      # 只看候选映射
  *
  * 构建（aarch64 静态）：
@@ -59,6 +69,7 @@
 struct range {
     unsigned long start;
     unsigned long end;
+    unsigned long long anon;        /* 常驻匿名页字节数 */
 };
 
 static const char *skip_paths[] = {
@@ -68,10 +79,17 @@ static const char *skip_paths[] = {
     "[anon:dalvik", "[anon:jit", NULL
 };
 
+/* 运行中的进程换出 ART 堆会在下次 GC 时整片换回来，所以默认跳过；
+ * 冻结的进程不跑 GC，可以放开 */
+static int include_art = 0;
+
 static int path_skipped(const char *path)
 {
     int i;
     if (path == NULL || path[0] == '\0')
+        return 0;
+
+    if (include_art && strncmp(path, "[anon:dalvik", 12) == 0)
         return 0;
 
     for (i = 0; skip_paths[i] != NULL; i++) {
@@ -85,6 +103,25 @@ static int path_skipped(const char *path)
     return 1;
 }
 
+static int push_range(struct range **arr, size_t *n, size_t *alloc,
+                      unsigned long start, unsigned long end,
+                      unsigned long long anon)
+{
+    if (*n == *alloc) {
+        size_t nalloc = *alloc ? *alloc * 2 : 64;
+        struct range *tmp = realloc(*arr, nalloc * sizeof(**arr));
+        if (tmp == NULL)
+            return -1;
+        *arr = tmp;
+        *alloc = nalloc;
+    }
+    (*arr)[*n].start = start;
+    (*arr)[*n].end = end;
+    (*arr)[*n].anon = anon;
+    (*n)++;
+    return 0;
+}
+
 static int collect_ranges(pid_t pid, struct range **out, size_t *count)
 {
     char path[64];
@@ -96,7 +133,8 @@ static int collect_ranges(pid_t pid, struct range **out, size_t *count)
     struct range *arr = NULL;
 
     unsigned long cur_start = 0, cur_end = 0;
-    int cur_ok = 0, cur_anon = 0;
+    unsigned long long cur_anon = 0;
+    int cur_ok = 0;
     char cur_path[512];
 
     snprintf(path, sizeof(path), "/proc/%d/smaps", (int)pid);
@@ -111,27 +149,15 @@ static int collect_ranges(pid_t pid, struct range **out, size_t *count)
         char perms[8];
 
         if (sscanf(line, "%lx-%lx %7s", &s, &e, perms) == 3) {
-            /* 新的 VMA 头：先提交上一条 */
-            if (cur_ok && cur_anon > 0) {
-                if (cur_end > cur_start) {
-                    if (n == alloc) {
-                        size_t nalloc = alloc ? alloc * 2 : 64;
-                        struct range *tmp = realloc(arr, nalloc * sizeof(*arr));
-                        if (tmp == NULL) {
-                            free(arr);
-                            free(line);
-                            fclose(fp);
-                            return -1;
-                        }
-                        arr = tmp;
-                        alloc = nalloc;
-                    }
-                    arr[n].start = cur_start;
-                    arr[n].end = cur_end;
-                    n++;
+            /* 老内核没有 VmFlags 行：上一个 VMA 在这里提交 */
+            if (cur_ok && cur_anon > 0 && cur_end > cur_start) {
+                if (push_range(&arr, &n, &alloc, cur_start, cur_end, cur_anon) != 0) {
+                    free(arr);
+                    free(line);
+                    fclose(fp);
+                    return -1;
                 }
             }
-
             cur_start = s;
             cur_end = e;
             cur_ok = (perms[0] == 'r' && perms[1] == 'w' && perms[3] == 'p');
@@ -142,19 +168,16 @@ static int collect_ranges(pid_t pid, struct range **out, size_t *count)
             {
                 char *p = strchr(line, '/');
                 char *b = strchr(line, '[');
-                if (p != NULL && (b == NULL || p < b)) {
-                    size_t l = strlen(p);
+                char *src = NULL;
+                if (p != NULL && (b == NULL || p < b))
+                    src = p;
+                else if (b != NULL)
+                    src = b;
+                if (src != NULL) {
+                    size_t l = strlen(src);
                     if (l >= sizeof(cur_path))
                         l = sizeof(cur_path) - 1;
-                    memcpy(cur_path, p, l);
-                    cur_path[l] = '\0';
-                    if (l > 0 && cur_path[l - 1] == '\n')
-                        cur_path[l - 1] = '\0';
-                } else if (b != NULL) {
-                    size_t l = strlen(b);
-                    if (l >= sizeof(cur_path))
-                        l = sizeof(cur_path) - 1;
-                    memcpy(cur_path, b, l);
+                    memcpy(cur_path, src, l);
                     cur_path[l] = '\0';
                     if (l > 0 && cur_path[l - 1] == '\n')
                         cur_path[l - 1] = '\0';
@@ -170,29 +193,27 @@ static int collect_ranges(pid_t pid, struct range **out, size_t *count)
             continue;
 
         if (strncmp(line, "Anonymous:", 10) == 0) {
-            unsigned long kb = strtoul(line + 10, NULL, 10);
-            if (kb > 0)
-                cur_anon = 1;
+            cur_anon = strtoull(line + 10, NULL, 10) * 1024ULL;
         } else if (strncmp(line, "VmFlags:", 8) == 0) {
-            if (cur_anon > 0) {
-                if (n == alloc) {
-                    size_t nalloc = alloc ? alloc * 2 : 64;
-                    struct range *tmp = realloc(arr, nalloc * sizeof(*arr));
-                    if (tmp == NULL) {
-                        free(arr);
-                        free(line);
-                        fclose(fp);
-                        return -1;
-                    }
-                    arr = tmp;
-                    alloc = nalloc;
+            /* VmFlags 是每个 VMA 的最后一行 */
+            if (cur_anon > 0 && cur_end > cur_start) {
+                if (push_range(&arr, &n, &alloc, cur_start, cur_end, cur_anon) != 0) {
+                    free(arr);
+                    free(line);
+                    fclose(fp);
+                    return -1;
                 }
-                arr[n].start = cur_start;
-                arr[n].end = cur_end;
-                n++;
-                cur_anon = 0;
-                cur_ok = 0;
             }
+            cur_ok = 0;
+        }
+    }
+
+    if (cur_ok && cur_anon > 0 && cur_end > cur_start) {
+        if (push_range(&arr, &n, &alloc, cur_start, cur_end, cur_anon) != 0) {
+            free(arr);
+            free(line);
+            fclose(fp);
+            return -1;
         }
     }
 
@@ -202,6 +223,28 @@ static int collect_ranges(pid_t pid, struct range **out, size_t *count)
     *out = arr;
     *count = n;
     return 0;
+}
+
+/* /proc/<pid>/status 里的 VmSwap（KB）；读不到返回 -1 */
+static long long read_vmswap_kb(pid_t pid)
+{
+    char path[64];
+    char buf[256];
+    FILE *fp;
+    long long kb = -1;
+
+    snprintf(path, sizeof(path), "/proc/%d/status", (int)pid);
+    fp = fopen(path, "re");
+    if (fp == NULL)
+        return -1;
+    while (fgets(buf, sizeof(buf), fp) != NULL) {
+        if (strncmp(buf, "VmSwap:", 7) == 0) {
+            kb = strtoll(buf + 7, NULL, 10);
+            break;
+        }
+    }
+    fclose(fp);
+    return kb;
 }
 
 static long one_call(int pidfd, struct iovec *iov, int cnt)
@@ -268,11 +311,14 @@ int main(int argc, char **argv)
     int pidfd;
     struct range *ranges = NULL;
     size_t count = 0;
+    size_t k;
     unsigned long long budget;
-    unsigned long long done = 0;
+    unsigned long long planned = 0;
+    unsigned long page = (unsigned long)sysconf(_SC_PAGESIZE);
+    long long swap_before, swap_after;
 
     if (argc < 2) {
-        fprintf(stderr, "usage: %s --probe | --pid <pid> [--max-mb N] [--list]\n", argv[0]);
+        fprintf(stderr, "usage: %s --probe | --pid <pid> [--max-mb N] [--include-art] [--list]\n", argv[0]);
         return 64;
     }
 
@@ -285,8 +331,10 @@ int main(int argc, char **argv)
             max_mb = strtol(argv[++i], NULL, 10);
         } else if (strcmp(argv[i], "--list") == 0) {
             list_only = 1;
+        } else if (strcmp(argv[i], "--include-art") == 0) {
+            include_art = 1;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            printf("usage: %s --probe | --pid <pid> [--max-mb N] [--list]\n", argv[0]);
+            printf("usage: %s --probe | --pid <pid> [--max-mb N] [--include-art] [--list]\n", argv[0]);
             return 0;
         } else {
             fprintf(stderr, "unknown arg: %s\n", argv[i]);
@@ -300,6 +348,8 @@ int main(int argc, char **argv)
     }
     if (max_mb <= 0)
         max_mb = 512;
+    if (page == 0 || page == (unsigned long)-1)
+        page = 4096;
 
     if (collect_ranges((pid_t)pid, &ranges, &count) != 0) {
         fprintf(stderr, "cannot read /proc/%ld/smaps (errno=%d)\n", pid, errno);
@@ -313,10 +363,9 @@ int main(int argc, char **argv)
     }
 
     if (list_only) {
-        size_t k;
         for (k = 0; k < count; k++)
-            printf("%lx-%lx  %lu KB\n", ranges[k].start, ranges[k].end,
-                   (ranges[k].end - ranges[k].start) / 1024);
+            printf("%lx-%lx  %lu KB  anon %llu KB\n", ranges[k].start, ranges[k].end,
+                   (ranges[k].end - ranges[k].start) / 1024, ranges[k].anon / 1024);
         free(ranges);
         return 0;
     }
@@ -329,21 +378,34 @@ int main(int argc, char **argv)
     }
 
     budget = (unsigned long long)max_mb * 1024ULL * 1024ULL;
+    swap_before = read_vmswap_kb((pid_t)pid);
 
     {
         struct iovec iov[MAX_BATCH];
         int cnt = 0;
 
-        for (i = 0; (size_t)i < count && done < budget; i++) {
-            unsigned long pos = ranges[i].start;
-            unsigned long end = ranges[i].end;
+        for (k = 0; k < count && planned < budget; k++) {
+            unsigned long pos = ranges[k].start;
+            unsigned long end = ranges[k].end;
+            unsigned long long left = budget - planned;
 
-            while (pos < end && done < budget) {
+            /* 这段的常驻匿名页超出剩余预算：只换出按比例截取的前一段 */
+            if (ranges[k].anon > left) {
+                unsigned long long span = (unsigned long long)(end - pos) * left / ranges[k].anon;
+                span = (span + page - 1) / page * page;
+                if (span < page)
+                    span = page;
+                if (span < (unsigned long long)(end - pos))
+                    end = pos + (unsigned long)span;
+                planned = budget;
+            } else {
+                planned += ranges[k].anon;
+            }
+
+            while (pos < end) {
                 unsigned long len = end - pos;
                 if (len > CHUNK_BYTES)
                     len = CHUNK_BYTES;
-                if ((unsigned long long)len > budget - done)
-                    len = (unsigned long)(budget - done);
 
                 iov[cnt].iov_base = (void *)pos;
                 iov[cnt].iov_len = len;
@@ -352,9 +414,7 @@ int main(int argc, char **argv)
 
                 if (cnt == MAX_BATCH) {
                     long ret = one_call(pidfd, iov, cnt);
-                    if (ret > 0) {
-                        done += (unsigned long long)ret;
-                    } else if (ret < 0 && errno == ENOSYS) {
+                    if (ret < 0 && errno == ENOSYS) {
                         free(ranges);
                         close(pidfd);
                         fprintf(stderr, "process_madvise unsupported\n");
@@ -365,16 +425,17 @@ int main(int argc, char **argv)
             }
         }
 
-        if (cnt > 0) {
-            long ret = one_call(pidfd, iov, cnt);
-            if (ret > 0)
-                done += (unsigned long long)ret;
-        }
+        if (cnt > 0)
+            one_call(pidfd, iov, cnt);
     }
 
     free(ranges);
     close(pidfd);
 
-    printf("%llu\n", done);
+    swap_after = read_vmswap_kb((pid_t)pid);
+    if (swap_before >= 0 && swap_after > swap_before)
+        printf("%llu\n", (unsigned long long)(swap_after - swap_before) * 1024ULL);
+    else
+        printf("0\n");
     return 0;
 }

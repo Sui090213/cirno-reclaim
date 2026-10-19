@@ -1,23 +1,23 @@
 <div align="center">
 
-# Cirno Reclaim Hybrid
+# Cirno Reclaim Hybrid · ColorOS 17 适配版
 
-**把「冻结但不释放」的后台内存真正拿回来，同时把前台应用的内存压下去**
+**给 Cirno 墓碑配套的内存回收模块：后台应用尽量不杀，手机尽量不卡**
 
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
-[![Android 12+](https://img.shields.io/badge/Android-12%2B-3DDC84?logo=android&logoColor=white)](#环境要求)
-[![Magisk](https://img.shields.io/badge/Magisk-24%2B-00AF9C)](https://github.com/topjohnwu/Magisk)
+[![ColorOS 17](https://img.shields.io/badge/ColorOS-17-1BA784)](#coloros-17-说明)
 [![KernelSU](https://img.shields.io/badge/KernelSU-supported-4B8BBE)](https://github.com/tiann/KernelSU)
-[![APatch](https://img.shields.io/badge/APatch-supported-8A2BE2)](https://github.com/bmax121/APatch)
 
-Magisk / KernelSU / APatch · Android 12+ · cgroup v2 · GPL-3.0
-
-作者：**flyingr** · 反馈：**asui20090213@outlook.com**
+原作者：**flyingr**（[Sui090213/cirno-reclaim](https://github.com/Sui090213/cirno-reclaim)） · ColorOS 17 适配：**yishisanren**
 
 </div>
 
 ---
 
+> **状态**：v2.0.0-coloros.1。脚本在 Linux 上模拟 Android 两种 shell 环境（mksh + toybox、busybox）
+> 跑过完整的自动化测试（`tests/sim.sh`，真实进程 + 真实 zram），**尚未在真机上验证**。
+> 首次安装默认是**演练模式**：只在日志里记录本来会做什么，不压缩、不结束任何进程。
+> 回滚：`touch /data/adb/modules/cirno_reclaim/disable` 后重启。
 > **状态**：v2.2.2。已通过 POSIX shell 静态检查、`node --check`、配置解析与打包结构校验，
 > **尚未在真机上完整验证**。首次刷入建议先设 `dry_run=1`、`zram_enable=0` 观察一轮，
 > 并先想好回滚方式（`touch /data/adb/modules/cirno_reclaim/disable` 后重启）。
@@ -26,41 +26,42 @@ Magisk / KernelSU / APatch · Android 12+ · cgroup v2 · GPL-3.0
 
 ## 这是什么
 
-这是 [Cirno](https://github.com/Freezer-Team/Cirno) 冻结器的**配套内存管理模块**，由两个方向合并而来：
+[Cirno](https://github.com/Freezer-Team/Cirno) 把切到后台 3 秒的应用冻结住：不再占 CPU、不耗电，
+但它们占着的内存一直不还。冻结的应用越多，手机可用内存越少，最后系统要么卡（内存回收抢 CPU），
+要么自己随机杀后台。
 
-| 来源 | 贡献 |
+本模块在内存真的紧张时介入，顺序是：
+
+1. **先压缩**：把冻结应用的内存压进 zram（压缩内存）。应用不死，切回来不用重新启动；
+2. **还不够才结束**：按占用从大到小，结束冻结中的应用，有单轮 / 每小时上限；
+3. **前台应用只在紧张时轻处理**：发 trim 请求 + 少量换出，绝不结束正在用的应用。
+
+内存充足时它什么都不做。
+
+## 相对原版改了什么
+
+### 原版在真机上根本跑不起来（已修）
+
+- `bin/common.sh` 和 `bin/reclaim.sh` 各有一处 case 模式里的 `;`、`(`、`<` 没有转义，
+  **mksh、busybox、dash、bash 全部解析失败**。`common.sh` 被所有脚本加载，KernelSU 用 busybox
+  跑 `service.sh` 时直接退出，守护进程从来不会启动；mksh 下则后半个函数库都不存在。
+  原版的「静态检查」是自写的 Python 脚本，没有用真正的 shell 解析过。
+- 现在每个脚本都用 mksh / busybox / dash 实际解析，并在模拟环境里端到端运行。
+
+### 适配 ColorOS 17 + Cirno
+
+| 改动 | 原因 |
 |---|---|
-| **cirno-reclaim**（由 Cirno 派生） | 冻结进程回收引擎、前台舒缓、KsuWebUI、安全模型 |
-| **HybridRAM**（Razal） | zram + swapfile 混合交换、VM 参数调优与回写思路 |
+| 冻结进程两种 cgroup 布局都认（`apps/uid_*/pid_*` 和 `uid_*/pid_*`） | 与 Cirno 的 `FrozenRW` 判断完全一致；原版只认前一种，另一种布局上永远找不到冻结进程 |
+| 按 `cgroup.events` 的实际冻结状态判断 | 冻结写在 uid 层时 pid 层的 `cgroup.freeze` 仍是 0，只看它会漏 |
+| 冻结状态下直接结束进程，不先解冻 | cgroup v2 冻结的进程能收到 SIGKILL（系统 lmkd 也这么做）。原版先解冻再等 1 秒，应用会在这一秒里跑起来，也会让 Cirno 记录的状态与实际不一致 |
+| 不碰 ColorOS 的「内存扩展」 | ColorOS 的 zram 带写回存储，由系统守护进程管理。ColorOS 上无论配置如何都不重建 zram；`vm_tune` 默认关闭，不改系统内存参数 |
+| 保护名单补上 ColorOS 关键组件 | 桌面 `com.android.launcher`、athena、电池、安全中心、HeyTap 推送 / 账号等；默认排除 `com.oplus.*`、`com.coloros.*`、`com.heytap.*` 等系统应用 |
+| 诊断信息加入 ColorOS / Cirno 相关项 | cgroup 布局与冻结数、zram / 内存扩展状态、前台识别、root 方案版本 |
 
-合并后由 **flyingr** 维护，脚本全部重写并统一到一套配置里，不再需要装两个模块互相打架。
+### 让手机少卡，而不是多杀
 
-一句话分工：
-
-- **Cirno** 负责冻结后台应用；
-- **本模块**负责把冻结进程占着的内存真正还给系统，并且让前台应用主动吐出缓存；
-- **zram / swap / VM 调参**负责让「换出」这件事本身更快、更少卡顿。
-
----
-
-## 相对上游改了什么
-
-这一版重点修的就是实际用起来最难受的四个点。
-
-### 1. 回收太保守、每次只回收一点点
-
-| 改动 | 说明 |
-|---|---|
-| 阈值双轨 | `mem_low_mb` 与 `mem_low_pct` 取较大值，12GB 机器不会再用 8GB 的绝对值 |
-| PSI 触发 | 读 `/proc/pressure/memory` 的 `some avg10`，MemAvailable 看着还行但系统已经在卡时也会回收 |
-| 多轮迭代 | `max_rounds` 分批重扫，而不是扫一次就结束 |
-| 提高默认额度 | 单轮 4 个 / 每小时 20 个（上游 3 / 12），冻结 5 分钟即可回收（上游 10） |
-| 真正按 PSS 排序 | 从大到小回收，每次回收后立刻复测可用内存，达到目标才停 |
-| 深回收 | 杀完还不够时，把冻结进程的匿名页换出（不杀进程） |
-
-### 2. 前台回收效果有限
-
-| 改动 | 说明 |
+| 改动 | 原因 |
 |---|---|
 | 全 PID trim | `app_trim_all_pids=1`：对该包**所有**进程发 `am send-trim-memory`，不只是主进程 |
 | 多轮换出 | `app_pageout_passes=3`：每轮重新读 smaps、按当前 PSS 分配预算，越换越干净 |
@@ -108,163 +109,84 @@ WebUI 顶部的圆点就是守护状态，`控制台` 的圆环与心跳能看�
 
 ### 环境要求
 
-- Android 12+（需要 cgroup v2 的 per-pid freezer，即 Cirno 本身的要求）；
-- Magisk 24+ / KernelSU 0.6+ / APatch；
-- 建议同时安装并启用 Cirno 本体（否则 `only_frozen=1` 时没有可回收对象，可改成 `0`）；
-- 前台页换出额外需要：arm64、内核支持 `pidfd_open` + `process_madvise`（常见于 5.10+ GKI）、有 zram 或 swap。
-  本包的 arm64 helper 已内置（静态链接，非 arm64 设备安装时自动移除）。
+- ColorOS 17（其他 ColorOS / OxygenOS 版本应可用，未验证）；
+- KernelSU / KernelSU Next / SukiSU（Magisk、APatch 也能装，WebUI 需要 KernelSU 系管理器）；
+- [Cirno](https://github.com/Freezer-Team/Cirno) 已安装并在 LSPosed 里启用；
+- 页换出需要 arm64 + 内核支持 `process_madvise`（5.10+ GKI 都有）。
 
 ### 步骤
 
-1. 下载 `Cirno-Reclaim-Hybrid-v2.2.2.zip`；
-2. 在 Magisk / KernelSU / APatch 里刷入；
-3. 重启；
-4. KernelSU 用户：模块详情 → 打开 WebUI；Magisk 用户用终端或「操作」按钮。
+1. 下载 `dist/Cirno-Reclaim-Hybrid-v2.0.0-coloros.1.zip`，在管理器里刷入，重启；
+2. 打开模块 WebUI，概览页会提示「演练模式」；
+3. 正常用一两天，看「运行日志」里的 `DRY would pageout` / `DRY would reclaim`：
+   这是它本来会压缩 / 结束的应用；
+4. 觉得没问题，在「设置」里关掉「演练模式」并保存。
 
-> 升级安装不会覆盖 `/data/adb/cirno_reclaim/config.conf`；新增的配置项会自动补默认值。
+## ColorOS 17 说明
 
-### 从 cirno-reclaim 升级
-
-模块 id 仍然是 `cirno_reclaim`，直接覆盖刷入即可，配置和日志位置不变。
-
----
-
-## 小米 / HyperOS 注意
-
-- **内存扩展**：HyperOS 的「内存扩展」本身就是 zram，开机时已被 `swapon`，
-  模块检测到就会**跳过重建**（`zram_enable=1` 也不会动它）。想彻底不管 zram 就设 `zram_enable=0`。
-- **省电策略**：把 KernelSU / Magisk 管理器、以及 Cirno 设为「无限制」，否则后台被杀时
-  守护进程会被连带带走。即使被杀，`watchdog` 也会拉回，但会更耗电、日志里出现 `WATCHDOG:` 行。
-- **前台识别**：HyperOS 仍然输出 `topResumedActivity`。如果日志出现
-  `APP RELIEF skip: cannot detect foreground package`，用
-  `dumpsys window | grep mCurrentFocus` 手工确认格式，再把输出发到反馈邮箱。
-- **oom_score_adj**：小米的缓存进程一般就是 900，和默认 `min_oom_score_adj=900` 一致，不用改。
-- 不要开 `allow_system_uid=1`；HyperOS 上系统进程被回收的后果比原生更明显。
-
----
+- **内存扩展**：保持系统默认即可。本模块只往已有的 zram 里压缩，不改大小、不重建。
+- **省电策略**：把 KernelSU 管理器、Cirno 设为「允许后台运行」。守护进程被系统清掉时 watchdog 会拉起，
+  日志里会出现 `WATCHDOG:`。
+- **Cirno 白名单**：Cirno 不冻结的应用（系统应用、输入法、它的白名单）本模块也不会动。
+- **前台识别**：用 `dumpsys activity` 的 `topResumedActivity`。日志里出现
+  `cannot detect foreground package` 时，请把诊断信息提到 Issue。
 
 ## 三种预设
 
-WebUI「设置」页顶部，或命令行：
-
-```sh
-sh /data/adb/modules/cirno_reclaim/bin/ctl.sh preset aggressive
-```
+WebUI「设置」页顶部，或命令行 `sh /data/adb/modules/cirno_reclaim/bin/ctl.sh preset <名字>`：
 
 | | 保守 | 均衡（默认） | 激进 |
 |---|---|---|---|
 | 触发阈值 | 600MB / 6% | 800MB / 8% | 1600MB / 12% |
 | 目标 | 900MB / 10% | 1200MB / 14% | 2200MB / 18% |
-| 单轮 / 每小时 | 2 / 8 | 4 / 20 | 6 / 36 |
+| 单次压缩上限 | 128MB | 256MB | 512MB |
+| 结束进程：单轮 / 每小时 | 2 / 8 | 4 / 20 | 6 / 36 |
 | 最短冻结 | 15 分钟 | 5 分钟 | 2 分钟 |
-| 最小进程 | 96MB | 48MB | 32MB |
 | 前台阈值 | 1200MB | 900MB | 700MB |
-| 前台页换出 | 关 | 开 | 开（4 轮） |
-| 深回收 / 清页缓存 | 关 / 关 | 开 / 关 | 开 / 开 |
 
-「觉得回收太少」就先选**激进**跑一天；如果出现误杀或明显卡顿，再退回均衡。
+三档都是「先压缩、不够再结束」。阈值取「绝对值」和「总内存百分比」中较大的那个。
 
----
+## 工作方式
 
-## 两条回收路径
+### 后台回收
 
-### 后台回收（会结束进程）
+触发条件：可用内存低于阈值，或内存压力（PSI `some avg10`）超过 `psi_some_avg10`。
 
-每轮：
+候选必须**同时**满足：应用 UID、`oom_score_adj ≥ 900`（缓存级）、处于冻结状态、不是前台、
+不在保护 / 排除名单、PSS ≥ `min_process_mb`、已冻结 ≥ `min_frozen_min` 分钟。
 
-1. 判断是否需要动手：`MemAvailable < 阈值`，或 PSI 超过 `psi_some_avg10`，或单个冻结进程 PSS ≥ `high_pss_mb`；
-2. 扫描 `/proc/<pid>/`，只保留：
-   - 应用 UID（`uid % 100000` ∈ `10000..19999`）；
-   - `oom_score_adj >= 900`（缓存级）；
-   - `cgroup.freeze=1`（默认要求）；
-   - 非前台、不在保护名单、命中 include 名单；
-   - PSS ≥ `min_process_mb`；
-   - 已冻结 ≥ `min_frozen_min` 分钟；
-3. 按 PSS 从大到小，**先解冻再结束**，每次回收后复测可用内存；
-4. 达到目标 / 单轮上限 / 每小时上限就停；
-5. 还不够就深回收（页换出），最后才考虑 `drop_caches`。
-
-日志示例：
+1. 按 PSS 从大到小换出冻结进程的匿名页，直到达到目标或用完 `deep_pageout_max_mb`；
+2. 仍低于目标，按 PSS 从大到小结束候选，结束前复核 starttime / oom / 前台 / 冻结状态；
+3. 最后才考虑 `drop_caches`（默认关）。
 
 ```text
-RECLAIM pid=12345 pkg=com.example.app pss=210MB age=420s freed=180MB avail=1310MB mode=pid
+DEEP pid=12345 pkg=com.example.game pss=820MB pageout=256MB
+RECLAIM pid=23456 pkg=com.example.video pss=410MB age=900s avail=2050MB est=2310MB mode=pid
 ```
 
 ### 前台舒缓（不结束进程）
 
-`app_relief.sh` 对当前前台包：
-
-1. 汇总该包所有进程的 PSS / 线程数；
-2. 超过 `app_pss_mb` 时，对每个进程发 `am send-trim-memory <pid> <level>`；
-3. 若 helper 可用，再按 PSS 比例分配预算，分 `app_pageout_passes` 轮做 `MADV_PAGEOUT`；
-4. 复测 PSS 和可用内存，写进日志和 WebUI。
-
-日志示例：
+只在内存紧张时自动执行（WebUI「舒缓前台」按钮随时可用）：对前台应用的所有进程发
+`am send-trim-memory`，再在 `app_pageout_max_mb` 内换出少量匿名页（不含 ART 堆）。
 
 ```text
-APP RELIEF done pkg=com.ss.android.ugc.aweme pss=1120MB->860MB avail=900MB->1150MB pageout=176MB
+APP RELIEF done pkg=com.ss.android.ugc.aweme pss=1120MB->980MB avail=900MB->1040MB pageout=64MB
 ```
-
-> 页换出不杀进程、不杀线程，被换出的页在应用再次访问时由内核换回；代价是可能出现一次缺页。
-> 如果换出后反而卡顿，把 `app_pageout=0`，只保留 trim。
-
----
 
 ## 配置
 
-配置文件：`/data/adb/cirno_reclaim/config.conf`（`0600`，只应 root 修改）。
+运行时配置：`/data/adb/cirno_reclaim/config.conf`（`0600`）。配置不会被当成脚本执行，
+逐行解析、键白名单、按类型校验。改完守护进程下一轮自动重读。
 
-改完守护进程下一轮自动重读，也可以立即重启：
-
-```sh
-sh /data/adb/modules/cirno_reclaim/bin/ctl.sh restart
-```
-
-### 通用
+与原版不同或新增的键：
 
 | 键 | 默认 | 说明 |
 |---|---:|---|
-| `enable` | `1` | 总开关 |
-| `dry_run` | `0` | 只记录不动手 |
-| `interval` | `15` | 守护周期（秒） |
-| `boot_delay` | `90` | 开机后等待 |
-| `log_max_kb` | `512` | 日志上限 |
-| `profile` | `balanced` | 预设标记 |
-
-### 后台回收
-
-| 键 | 默认 | 说明 |
-|---|---:|---|
-| `mem_low_mb` / `mem_low_pct` | `800` / `8` | 触发阈值（取较大值） |
-| `mem_target_mb` / `mem_target_pct` | `1200` / `14` | 目标（取较大值） |
-| `psi_enable` / `psi_some_avg10` | `1` / `25` | PSI 压力触发 |
-| `high_pss_mb` / `high_pss_interval` | `600` / `90` | 单进程大内存看门狗 |
-| `max_kills_per_run` / `max_kills_per_hour` | `4` / `20` | 额度 |
-| `max_rounds` | `4` | 单次最多几批 |
-| `cooldown_sec` | `60` | 两次自动回收的间隔 |
-| `min_process_mb` | `48` | 忽略小进程 |
-| `min_frozen_min` | `5` | 最短冻结时间 |
-| `min_oom_score_adj` | `900` | 只碰缓存级进程，别乱调 |
-| `only_frozen` | `1` | 只回收已冻结进程 |
-| `kill_mode` | `pid` | `pid` 精确结束 / `am` 结束整包后台 |
-| `protect_foreground` | `1` | 保护前台 |
-| `screen_off_only` | `0` | 只在息屏时回收 |
-| `deep_reclaim` / `deep_pageout_max_mb` | `1` / `96` | 深回收 |
-| `drop_caches` / `drop_caches_cooldown` | `0` / `1800` | 清页缓存 |
-| `allow_system_uid` | `0` | 允许系统 UID，别开 |
-
-### 前台舒缓
-
-| 键 | 默认 | 说明 |
-|---|---:|---|
-| `app_reclaim` | `1` | 启用 |
-| `app_pss_mb` | `900` | 触发阈值（全部进程 PSS 之和） |
-| `app_reclaim_interval` / `app_reclaim_cooldown` | `45` / `90` | 周期 / 冷却 |
-| `app_trim_level` | `RUNNING_LOW` | `MODERATE` / `LOW` / `CRITICAL` |
-| `app_trim_all_pids` | `1` | 所有进程都 trim |
-| `app_pageout` | `1` | 启用页换出 |
-| `app_pageout_max_mb` / `app_pageout_passes` | `192` / `3` | 预算 / 轮数 |
-| `app_proc_reclaim` | `0` | OEM 的 `/proc/<pid>/reclaim` |
+| `dry_run` | `1` | 首次安装开启演练 |
+| `reclaim_order` | `pageout_first` | `kill_first` = 原版顺序 |
+| `deep_pageout_max_mb` | `256` | 单次压缩上限 |
+| `vm_tune` / `zram_enable` | `0` / `0` | ColorOS 上 zram 无论如何都不动 |
+| `exclude_packages` | 见 `config.conf` | 增加了 ColorOS 系统应用前缀 |
 
 ### VM / 交换
 
@@ -307,15 +229,14 @@ sh /data/adb/modules/cirno_reclaim/bin/ctl.sh restart
 ```sh
 ctl=/data/adb/modules/cirno_reclaim/bin/ctl.sh
 
-sh $ctl status            # 人读状态
-sh $ctl status --json     # JSON（WebUI 用）
-sh $ctl scan              # 候选列表
+sh $ctl status            # 状态
+sh $ctl scan              # 当前候选
 sh $ctl run               # 立即回收一次
 sh $ctl apprelief --force # 立即舒缓前台
 sh $ctl log 120           # 日志
-sh $ctl diag              # 诊断信息（反馈用）
-sh $ctl preset aggressive # 预设
-sh $ctl set mem_low_mb=1200 max_kills_per_run=6
+sh $ctl diag              # 诊断信息（提 Issue 用）
+sh $ctl preset aggressive
+sh $ctl set dry_run=0
 sh $ctl restart | start | stop
 ```
 
@@ -359,190 +280,35 @@ KernelSU / KsuWebUIStandalone 打开模块即可，页面在 `webroot/`，纯静
 
 ## 反馈
 
-- 邮箱：**asui20090213@outlook.com**
-- WebUI「反馈」页可以一键复制诊断信息，粘贴进邮件即可；
-- 也欢迎在 GitHub 提 Issue（附诊断信息更好定位）。
+在 WebUI「反馈」页复制诊断信息，到 [Issues](https://github.com/yishisanren/cirno-reclaim/issues) 提交。
 
-请尽量写明：机型、Android 版本、内核版本、root 方案、复现步骤、日志。
-
----
-
-## 构建
+## 开发
 
 ```sh
-# 1. 语法检查
-python3 tools/lint_sh.py .
-node --check webroot/app.js
-# 可选：shellcheck -s sh bin/*.sh *.sh
+# 设备上的 shell 能否解析（比 tools/lint_sh.py 可靠）
+for f in *.sh bin/*.sh; do mksh -n "$f" && busybox sh -n "$f"; done
 
-# 2. 编译两个 arm64 原生组件（C helper + C++ 守护）
-cd src && ./build.sh          # 需要 zig 0.13+（C++ 需要 zig c++）
-                              # 或 CC=aarch64-linux-android24-clang ./build.sh 只编 C helper
+# 端到端模拟（root；需要 mksh busybox toybox original-awk python3 setpriv cc）
+sh tests/sim.sh mksh      # /system/bin/sh + toybox + BWK awk
+sh tests/sim.sh busybox   # KernelSU 执行模块脚本的环境
 
-# 3. 打包（模块 zip 根目录必须直接有 module.prop）
-python3 tools/pack.py
+# arm64 helper（zig 0.13；没有 zig 时 pip install ziglang==0.13.0 也行）
+cd src && ./build.sh
+
+# 打包
+python3 tools/pack.py && python3 tools/checksums.py
 ```
 
-`tools/pack.py` 的模块包只包含运行期文件 + `LICENSE` + 两个原生组件的源码，
-不会把文档、构建脚本塞进刷入包；源码包（`--source`）保留全部文件。
-
-不编译原生组件也能用：C++ 守护自动回退到 shell，前台只做 trim。
-
-### 发布到 GitHub
-
-```sh
-python3 tools/lint_sh.py .        # 静态检查
-node --check webroot/app.js       # WebUI 语法
-python3 tools/pack.py             # 模块 zip  -> dist/
-python3 tools/checksums.py        # SHA-256   -> dist/CHECKSUMS.txt
-git tag v2.2.2 && git push origin v2.2.2
-```
-
-推送 tag 后 `.github/workflows/release.yml` 会自动：编译两个原生组件 → 跑 lint → 打包 →
-上传 artifact → 创建 Release（附带 zip 与 `CHECKSUMS.txt`）。
-
-发布前请逐项过一遍 [SECURITY.md](SECURITY.md) 第 7 节的检查清单。
-三种上传方式（网页 / git / gh）与仓库设置见 [docs/PUBLISH.md](docs/PUBLISH.md)，
-Release 正文可直接用 [RELEASE_NOTES-v2.2.2.md](RELEASE_NOTES-v2.2.2.md)。
-
----
-
-## 目录结构
-
-```text
-Cirno-Reclaim-Hybrid/
-├── module.prop
-├── customize.sh
-├── post-fs-data.sh
-├── service.sh
-├── uninstall.sh
-├── action.sh
-├── config.conf
-├── bin/
-│   ├── common.sh        # 日志 / 内存 / PSS / 冻结检测 / 配置准入
-│   ├── vm_tune.sh       # zram + swapfile + sysctl
-│   ├── reclaim.sh       # 后台回收引擎
-│   ├── app_relief.sh    # 前台舒缓
-│   ├── daemon.sh        # shell 守护（兼容回退）
-│   ├── watchdog.sh      # 保活看门狗
-│   ├── ctl.sh           # 命令行 / JSON API
-│   ├── cirno_daemon     # C++ 守护（默认引擎）
-│   └── cirno_pageout    # C 前台页换出 helper
-├── src/
-│   ├── cirno_daemon.cpp
-│   ├── cirno_pageout.c
-│   └── build.sh
-├── webroot/
-│   ├── index.html
-│   ├── style.css
-│   └── app.js
-├── docs/
-│   ├── PUBLISH.md
-│   └── SECURITY-AUDIT.md
-├── tools/
-│   ├── pack.py          # 打包模块 zip
-│   ├── lint_sh.py       # POSIX sh 静态检查
-│   └── checksums.py     # 生成 SHA-256
-├── .github/
-│   ├── workflows/release.yml
-│   ├── ISSUE_TEMPLATE/{bug_report.yml,config.yml}
-│   └── PULL_REQUEST_TEMPLATE.md
-├── .editorconfig
-├── .gitattributes
-├── .gitignore
-├── CHANGELOG.md
-├── CODE_OF_CONDUCT.md
-├── CONTRIBUTING.md
-├── LICENSE
-├── README.md
-├── RELEASE_NOTES-v2.2.2.md
-└── SECURITY.md
-```
-
-运行时数据：
-
-```text
-/data/adb/cirno_reclaim/
-├── config.conf
-├── daemon.pid
-├── watchdog.pid
-└── state/          # 心跳、统计、冻结时长、守护重启次数
-```
-
-日志：`/data/adb/modules/cirno_reclaim/log/reclaim.log`
-
----
-
-## 故障排查
-
-**扫描结果一直是空的**
-
-```sh
-sh /data/adb/modules/cirno_reclaim/bin/reclaim.sh --scan
-tail -n 120 /data/adb/modules/cirno_reclaim/log/reclaim.log
-```
-
-常见原因：Cirno 没在冻结、`oom_score_adj < 900`、冻结时间不够、PSS 太小、包在 `exclude_packages`、设备不是 per-pid cgroup 布局。
-
-**回收了但可用内存没涨多少**
-
-被回收进程可能大量使用共享页（PSS 会重复计算），或者刚被杀就被系统拉起来。看 `freed=` 和 `avail=` 差值，不要只看 PSS。
-
-**前台舒缓没有效果**
-
-日志里 `pss=1120MB->860MB` 说明有效；`->` 两边差不多说明应用不响应 trim，或者内核不支持 `process_madvise`（`pageout unavailable`）。
-
-**WebUI 显示旧版本**
-
-强制停止 KernelSU / KsuWebUI 后重开，或重启一次（WebUI 是静态文件，可能被 WebView 缓存）。
-
-**守护一直重启**
-
-看日志里 `WATCHDOG:` 行；如果 daemon 启动即退出，多半是配置语法错误——`ctl.sh` 会保留上一份配置并记 `config.conf syntax error`。
-
----
-
-## 安全
-
-- 只回收：应用 UID + `oom_score_adj>=900` + 已冻结 + 非前台 + 通过名单；
-- 前台路径**永不结束进程**，只 trim / 页换出；
-- 硬编码保护关键包（系统 UI、桌面、输入法、电话、GMS、root 管理器、Cirno）；
-- **配置不是无条件 source**：逐行只接受 `KEY=VALUE`，值只允许安全字符集，
-  不通过就拒绝加载并沿用旧值（详见 [SECURITY.md](SECURITY.md) 第 4 节）；
-- 配置 `0600`、数据目录 `0700`、日志 `0600`、`umask 077`；
-- 不上传任何数据、无遥测、无网络请求；
-- 卸载时停止全部进程并删除 `/data/adb/cirno_reclaim`。
-
-发布前必读的检查清单在 [SECURITY.md](SECURITY.md) 第 7 节，
-逐版本的审计记录在 [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md)。
-
----
+`tests/sim.sh` 会起一批真实进程（真实 UID、内存、`oom_score_adj`），配合假的 cgroup 目录和
+`dumpsys` / `am` / `getprop` 桩，在真实 zram 上跑扫描、压缩、结束、前台舒缓、配置写入、
+守护全链路与配置注入防护。
 
 ## 许可证与致谢
 
-本项目代码采用 **GPL-3.0-only**，见 [LICENSE](LICENSE)。
+**GPL-3.0-only**，见 [LICENSE](LICENSE)。
 
-选择 GPL-3.0 而不是 MIT / Apache-2.0 的原因：
-
-- 上游 [Cirno](https://github.com/Freezer-Team/Cirno) 本身是 GPL-3.0，配套模块采用同一协议最符合社区预期；
-- 这是一个 root 模块，copyleft 能保证二次分发者继续公开修改，避免「改一改就闭源卖」；
-- APatch / KernelSU / Magisk 生态里的同类模块普遍使用 GPL-3.0。
-
-如果你需要把本项目用于闭源产品，请先联系作者讨论授权。
-
-上游项目的版权与许可归各自作者所有：
-
-- [Cirno](https://github.com/Freezer-Team/Cirno)：冻结器与 cgroup v2 freezer 思路（GPL-3.0）；
-- **cirno-reclaim**：本项目的前身，提供了回收策略与安全模型的设计；本次实现依据其公开文档独立重写
-  （原始压缩包内只有文档、没有脚本），未复制其源码；
-- **HybridRAM**（Razal，Razal1_1）：zram / swapfile 混合交换与 VM 回写思路，代码为本项目重写；
-- [KernelSU](https://github.com/tiann/KernelSU)、[Magisk](https://github.com/topjohnwu/Magisk)、[APatch](https://github.com/bmax121/APatch)：模块运行环境；
+- [Cirno](https://github.com/Freezer-Team/Cirno)（Nep-Timeline / Freezer-Team）：冻结器本体；
+- **Cirno Reclaim Hybrid**（flyingr）：本项目的上游；
+- **HybridRAM**（Razal）：zram / swap 调参思路；
+- [KernelSU](https://github.com/tiann/KernelSU)、[Magisk](https://github.com/topjohnwu/Magisk)、[APatch](https://github.com/bmax121/APatch)；
 - [Zig](https://ziglang.org/) / musl：arm64 helper 交叉编译。
-
-如果你分发修改后的版本，请保留上述署名与许可证。
-
-<div align="center">
-
-**Cirno Reclaim Hybrid** · 让冻结真正等于省内存
-
-</div>

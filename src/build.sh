@@ -20,7 +20,20 @@ ZIG=${ZIG:-zig}
 if command -v "$ZIG" >/dev/null 2>&1; then
   HAVE_ZIG=1
 else
-  HAVE_ZIG=0
+  # 没装 zig 时也可以 pip install ziglang==0.13.0，用 python3 -m ziglang
+  if [ -n "${ZIG:-}" ]; then
+    ZIGCMD=$ZIG
+  elif command -v zig >/dev/null 2>&1; then
+    ZIGCMD=zig
+  elif python3 -m ziglang version >/dev/null 2>&1; then
+    ZIGCMD="python3 -m ziglang"
+  else
+    echo "zig not found. install zig 0.13+ (or pip install ziglang) or set CC to an aarch64 clang" >&2
+    exit 1
+  fi
+  echo "==> zig cc -> aarch64-linux-musl ($ZIGCMD)"
+  # ZIGCMD 可能是多个词，故意不加引号
+  $ZIGCMD cc -target aarch64-linux-musl -static -Os -s -o "$OUT" cirno_pageout.c
 fi
 
 build_c() {

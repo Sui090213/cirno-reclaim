@@ -19,7 +19,7 @@ fi
 printf '%s' "$$" >"$PID_FILE" 2>/dev/null
 chmod 600 "$PID_FILE" 2>/dev/null
 
-log "daemon start v$MODULE_VERSION pid=$$ avail=$(mem_avail_mb)MB total=$(mem_total_mb)MB"
+log "daemon start $MODULE_VERSION pid=$$ avail=$(mem_avail_mb)MB total=$(mem_total_mb)MB"
 heartbeat_write
 st_write daemon_started "$(date +%s)"
 
@@ -90,7 +90,7 @@ while :; do
   fi
 
   # VM 参数回写（Android 偶尔会重置）；总开关关闭时也不动系统参数
-  if [ "${enable:-1}" = "1" ] && [ "${vm_tune:-1}" = "1" ] && [ $((_now - _last_vm)) -ge 300 ]; then
+  if [ "${enable:-1}" = "1" ] && [ "${vm_tune:-0}" = "1" ] && [ $((_now - _last_vm)) -ge 300 ]; then
     sh "$CR_BIN/vm_tune.sh" reassert >/dev/null 2>&1
     _last_vm=$_now
   fi

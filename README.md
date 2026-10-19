@@ -1,6 +1,6 @@
 <div align="center">
 
-# Cirno Reclaim Hybrid · ColorOS 17 适配版
+# Cirno Reclaim Hybrid 
 
 **给 Cirno 墓碑配套的内存回收模块：后台应用尽量不杀，手机尽量不卡**
 

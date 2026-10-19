@@ -33,6 +33,25 @@
 - ColorOS 内存扩展的写回是否影响换出后的可用内存估算。
 
 以上都能从 WebUI「反馈 → 复制诊断信息」里看到。
+## v2.2.2
+
+### 本版改动与安全影响
+
+| 改动 | 安全影响 | 处理 |
+|---|---|---|
+| 新增 C++ 守护 `cirno_daemon` | 只读配置、只 `fork/exec` 固定路径脚本，不 eval、不拼命令 | 只解析自己需要的数字键；脚本路径硬编码；子进程超时 SIGKILL；`mkdir` 锁 + pid 命令行校验 |
+| WebUI 四页 + 外观设置 | 新增 `ui set` 往设备写 `theme.conf` | 键白名单 + 枚举/范围校验 + 原子替换；本地图片只存 WebView |
+| `ctl.sh config` 自愈 | 配置缺失时从模块默认值恢复 | 只复制 `$MODDIR/config.conf`，不执行其中内容 |
+| `ctl.sh log` 读日志 | 新增日志读取路径 | 只读固定 `$LOG_DIR/reclaim.log`，不接收任意路径 |
+| 模块包瘦身 | 减少包体积与攻击面 | 只保留运行期文件 + `LICENSE` + 原生源码 |
+| `cfg_load` 末尾换行 | 修复无换行时 EOF 反复处理同一行的死循环风险 | 解析前先补齐换行 |
+
+### 已知未修
+
+- C++ 守护未在真机运行；`--status`、超时、回退逻辑只做了编译与静态检查；
+- `app_relief` 仍未对目标 PID 做 `starttime` 复核（只 trim，不杀进程）；
+- helper 内部 TOCTOU（先读 smaps 后 `pidfd_open`）仍在；
+- 未在 AOSP / HyperOS 真机验证 `dumpsys` 与 `cgroup` 路径。
 
 ---
 

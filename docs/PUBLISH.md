@@ -16,17 +16,17 @@ SECURITY / CODE_OF_CONDUCT / Issue 表单 / PR 模板 / Release workflow），
    - 名字：`Cirno-Reclaim-Hybrid`
    - 可见性：Public
    - **不要**勾选 Add README / .gitignore / license（我们已经有）
-2. 解压 `dist/Cirno-Reclaim-Hybrid-v2.0.0-source.zip`，得到一堆文件。
+2. 解压 `dist/Cirno-Reclaim-Hybrid-v2.2.2-source.zip`，得到一堆文件。
 3. 在新建的空仓库页点 **uploading an existing file**，把解压出来的**所有内容**拖进去。
    - Windows 资源管理器默认隐藏以 `.` 开头的文件，先打开「查看 → 显示 → 隐藏的项目」，
      否则 `.github/`、`.gitignore`、`.editorconfig`、`.gitattributes` 会漏掉。
-4. Commit message 填 `v2.0.0: 整合 cirno-reclaim 与 HybridRAM`，提交。
+4. Commit message 填 `v2.2.2: 整合 cirno-reclaim 与 HybridRAM`，提交。
 5. 发布 Release：
    - Releases → **Draft a new release**
-   - Tag：`v2.0.0`，Target：`main`
-   - Title：`v2.0.0`
-   - 正文：复制 `RELEASE_NOTES-v2.0.0.md` 的内容
-   - 附件：上传 `dist/Cirno-Reclaim-Hybrid-v2.0.0.zip` 和 `dist/CHECKSUMS.txt`
+   - Tag：`v2.2.2`，Target：`main`
+   - Title：`v2.2.2`
+   - 正文：复制 `RELEASE_NOTES-v2.2.2.md` 的内容
+   - 附件：上传 `dist/Cirno-Reclaim-Hybrid-v2.2.2.zip` 和 `dist/CHECKSUMS.txt`
    - Publish release
 
 > 注意：网页上「创建 Release 时新建 tag」**不一定触发 Actions**（它产生的是 create 事件，
@@ -43,16 +43,16 @@ winget install --id Git.Git -e
 cd "D:\Backup\Documents\deepseek-harness\default-workspace\Cirno-Reclaim-Hybrid"
 git init -b main
 git add .
-git commit -m "v2.0.0: 整合 cirno-reclaim 与 HybridRAM"
+git commit -m "v2.2.2: 整合 cirno-reclaim 与 HybridRAM"
 git remote add origin https://github.com/flyingr/Cirno-Reclaim-Hybrid.git
 git push -u origin main
-git tag v2.0.0
-git push origin v2.0.0
+git tag v2.2.2
+git push origin v2.2.2
 ```
 
 首次 `push` 会弹出浏览器让你登录（Git Credential Manager），授权一次即可。
 
-`git push origin v2.0.0` 之后，`.github/workflows/release.yml` 会自动：
+`git push origin v2.2.2` 之后，`.github/workflows/release.yml` 会自动：
 编译 arm64 helper → 跑 lint → 打包模块/源码 → 生成 `CHECKSUMS.txt` → 创建带附件的 Release。
 
 ---
@@ -66,11 +66,11 @@ gh auth login
 cd "D:\Backup\Documents\deepseek-harness\default-workspace\Cirno-Reclaim-Hybrid"
 git init -b main
 git add .
-git commit -m "v2.0.0: 整合 cirno-reclaim 与 HybridRAM"
+git commit -m "v2.2.2: 整合 cirno-reclaim 与 HybridRAM"
 
 gh repo create flyingr/Cirno-Reclaim-Hybrid --public --source=. --remote=origin --push
-git tag v2.0.0
-git push origin v2.0.0
+git tag v2.2.2
+git push origin v2.2.2
 ```
 
 ---
@@ -83,7 +83,7 @@ git push origin v2.0.0
 | Topics | `android` `magisk` `kernelsu` `apatch` `lsposed` `memory` `zram` `swap` `cirno` |
 | License | 选择 GPL-3.0（仓库里已有 LICENSE，GitHub 会自动识别） |
 | Discussions | 打开，Issue 模板的「使用问题」链接指向它 |
-| Releases | 附 `*.zip` 与 `CHECKSUMS.txt`，正文用 `RELEASE_NOTES-v2.0.0.md` |
+| Releases | 附 `*.zip` 与 `CHECKSUMS.txt`，正文用 `RELEASE_NOTES-v2.2.2.md` |
 
 ---
 

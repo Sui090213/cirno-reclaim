@@ -50,7 +50,7 @@ daemon_healthy() {
   _p=$(cat "$PID_FILE" 2>/dev/null)
   case "$_p" in ''|*[!0-9]*) return 1 ;; esac
   pid_alive "$_p" || return 1
-  cmdline_has "$_p" "daemon.sh" || return 1
+  cmdline_has "$_p" "$(daemon_cmdline_pat)" || return 1
   return 0
 }
 
@@ -61,7 +61,7 @@ restart_daemon() {
   [ $((_now - _last)) -lt 20 ] && return 0
 
   log "WATCHDOG: daemon unhealthy (hb=$(since_epoch_file heartbeat)s), restarting"
-  stop_pidfile "$PID_FILE" daemon daemon.sh
+  stop_pidfile "$PID_FILE" daemon "$(daemon_cmdline_pat)"
   start_daemon
   st_write wd_last_restart "$_now"
   st_incr wd_restarts 1 >/dev/null

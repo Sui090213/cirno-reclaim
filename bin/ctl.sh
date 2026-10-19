@@ -7,16 +7,27 @@
 #  ctl.sh scan                 候选进程
 #  ctl.sh run [--manual|--json] 立即回收
 #  ctl.sh apprelief [--json]   舒缓前台
-#  ctl.sh log [N]              最近 N 行日志
+#  ctl.sh log [N]              最近 N 行日志（带文件路径与大小）
 #  ctl.sh diag                 反馈用的诊断信息
-#  ctl.sh config               当前运行时配置原文
+#  ctl.sh doctor               自检：路径 / 权限 / 引擎 / helper / 日志
+#  ctl.sh engine               当前守护引擎（cpp / shell）
+#  ctl.sh config               当前运行时配置原文（缺失自动恢复）
 #  ctl.sh save                 从 stdin 读 k=v 并保存
 #  ctl.sh set k=v [k=v ...]    保存若干项
 #  ctl.sh preset <name>        应用预设 conservative|balanced|aggressive
 #  ctl.sh restart|start|stop
 # ============================================================================
 
-. "$(dirname "$0")/common.sh"
+# 解析预检：common.sh 有语法错误时直接报出来，
+# 避免出现「cfg_load: command not found」这种让人摸不着头脑的连锁报错。
+_cr_common="$(dirname "$0")/common.sh"
+if ! sh -n "$_cr_common" >/dev/null 2>&1; then
+  echo "[ctl] common.sh 语法错误："
+  sh -n "$_cr_common" 2>&1 | head -n 6
+  exit 3
+fi
+
+. "$_cr_common"
 
 cr_init_dirs
 cfg_load
@@ -49,7 +60,7 @@ proc_healthy() {
 }
 
 status_json() {
-  _d=$(bool proc_healthy "$PID_FILE" daemon.sh)
+  _d=$(bool proc_healthy "$PID_FILE" "$(daemon_cmdline_pat)")
   _w=$(bool proc_healthy "$WD_PID_FILE" watchdog.sh)
   _hb=$(since_epoch_file heartbeat)
   _wd=$(since_epoch_file wd.heartbeat)
@@ -74,7 +85,7 @@ status_json() {
 
 status_text() {
   printf 'version   : %s\n' "$MODULE_VERSION"
-  printf 'daemon    : %s (heartbeat %ss ago)\n' "$(proc_healthy "$PID_FILE" daemon.sh && echo running || echo stopped)" "$(since_epoch_file heartbeat)"
+  printf 'daemon    : %s (heartbeat %ss ago)\n' "$(proc_healthy "$PID_FILE" "$(daemon_cmdline_pat)" && echo running || echo stopped)" "$(since_epoch_file heartbeat)"
   printf 'watchdog  : %s (heartbeat %ss ago)\n' "$(proc_healthy "$WD_PID_FILE" watchdog.sh && echo running || echo stopped)" "$(since_epoch_file wd.heartbeat)"
   printf 'memory    : avail=%sMB total=%sMB swap=%s/%sMB psi=%s\n' \
     "$(mem_avail_mb)" "$(mem_total_mb)" "$(swap_free_mb)" "$(swap_total_mb)" "$(psi_some_avg10)"
@@ -371,6 +382,187 @@ do_diag() {
   printf '\n=== 反馈：%s/issues ===\n' "$REPO_URL"
 }
 
+# ---------------------------------------------------------------- 日志 / 配置 / 自检
+do_info() {
+  _lsz=$(wc -c <"$LOG_FILE" 2>/dev/null | tr -d ' ')
+  case "$_lsz" in ''|*[!0-9]*) _lsz=0 ;; esac
+  printf '{"model":"%s","android":"%s","kernel":"%s","engine":"%s","pageout":%s,"log_size":%s,"log_path":"%s","config_ok":%s}\n' \
+    "$(getprop ro.product.model 2>/dev/null)" \
+    "$(getprop ro.build.version.release 2>/dev/null)" \
+    "$(uname -r 2>/dev/null)" \
+    "$(if cpp_daemon_ready; then printf 'cpp'; else printf 'shell'; fi)" \
+    "$(bool helper_ready)" \
+    "$_lsz" \
+    "$LOG_FILE" \
+    "$([ -r "$CONF_FILE" ] && printf '1' || printf '0')"
+  return 0
+}
+
+# 一次调用返回状态 + 设备信息，给 WebUI 省掉一半的同步 exec
+do_snapshot() {
+  _s=$(status_json 2>/dev/null | tr -d '\n')
+  _i=$(do_info 2>/dev/null | tr -d '\n')
+  printf '{"status":%s,"info":%s}\n' "$_s" "$_i"
+  return 0
+}
+
+# 外观配置：theme / bg / bgurl / alpha / accent / radius / dim / nav / perf
+do_ui() {
+  _sub=${1:-get}
+  _dir="$DATA_DIR/webui"
+  _f="$_dir/theme.conf"
+  mkdir -p "$_dir" 2>/dev/null
+  chmod 700 "$_dir" 2>/dev/null
+  case "$_sub" in
+    get)
+      if [ -r "$_f" ]; then
+        cat "$_f" 2>/dev/null
+      else
+        printf 'theme=auto\nbg=solid\nbgurl=\nalpha=92\naccent=green\nradius=28\ndim=78\nnav=pill\nperf=0\n'
+      fi
+      ;;
+    set)
+      _tmp="$_f.$$"
+      : >"$_tmp" 2>/dev/null
+      while IFS= read -r _l; do
+        case "$_l" in ''|'#'*) continue ;; esac
+        case "$_l" in *=*) ;; *) continue ;; esac
+        _k=${_l%%=*}
+        _v=${_l#*=}
+        case "$_k" in
+          theme) case "$_v" in auto|light|dark) ;; *) continue ;; esac ;;
+          bg) case "$_v" in solid|image) ;; *) continue ;; esac ;;
+          bgurl) printf '%s' "$_v" | grep -q '[^ -~]' && continue ;;
+          alpha) case "$_v" in ''|*[!0-9]*) continue ;; esac
+                 [ "$_v" -ge 30 ] && [ "$_v" -le 100 ] || continue ;;
+          accent) case "$_v" in green|blue|violet|pink) ;; *) continue ;; esac ;;
+          radius) case "$_v" in ''|*[!0-9]*) continue ;; esac
+                  [ "$_v" -ge 8 ] && [ "$_v" -le 36 ] || continue ;;
+          dim) case "$_v" in ''|*[!0-9]*) continue ;; esac
+               [ "$_v" -ge 0 ] && [ "$_v" -le 90 ] || continue ;;
+          nav) case "$_v" in pill|bar) ;; *) continue ;; esac ;;
+          perf) case "$_v" in 0|1) ;; *) continue ;; esac ;;
+          *) continue ;;
+        esac
+        printf '%s=%s\n' "$_k" "$_v" >>"$_tmp" 2>/dev/null
+      done
+      mv -f "$_tmp" "$_f" 2>/dev/null
+      chmod 600 "$_f" 2>/dev/null
+      printf '{"ok":1}\n'
+      ;;
+    *)
+      printf '{"ok":0,"err":"usage: ui get|set"}\n'
+      return 2
+      ;;
+  esac
+  return 0
+}
+
+do_log() {
+  _n=$(num "${1:-120}" 120)
+  case "$_n" in
+    0) _n=120 ;;
+  esac
+  if [ ! -f "$LOG_FILE" ]; then
+    printf '# 日志文件尚未生成: %s\n' "$LOG_FILE"
+    printf '# post-fs-data: %s 秒前\n' "$(since_epoch_file boot.postfs)"
+    printf '# service.sh  : %s 秒前\n' "$(since_epoch_file boot.service)"
+    printf '# 若上面是 999999，说明模块脚本没有执行：检查模块是否启用、是否安装完整。\n'
+    printf '# 可以先执行: sh %s doctor\n' "$CR_BIN/ctl.sh"
+    return 0
+  fi
+  printf '# file  : %s\n' "$LOG_FILE"
+  printf '# size  : %s bytes, %s lines\n' \
+    "$(wc -c <"$LOG_FILE" 2>/dev/null | tr -d ' ')" \
+    "$(wc -l <"$LOG_FILE" 2>/dev/null | tr -d ' ')"
+  printf '# tail  : %s\n' "$_n"
+  printf '# --------------------------------------------\n'
+  tail -n "$_n" "$LOG_FILE" 2>/dev/null
+  if [ -f "$LOG_FILE.1" ]; then
+    printf '# rotated: %s.1 (%s bytes)\n' "$LOG_FILE" "$(wc -c <"$LOG_FILE.1" 2>/dev/null | tr -d ' ')"
+  fi
+  return 0
+}
+
+do_config() {
+  if ! ensure_config; then
+    printf '# 配置文件不存在，且无法从模块默认值恢复\n'
+    printf '# 预期路径: %s\n' "$CONF_FILE"
+    printf '# 模块默认: %s\n' "$MODDIR/config.conf"
+    return 3
+  fi
+  printf '# path: %s\n' "$CONF_FILE"
+  printf '# size: %s bytes\n' "$(wc -c <"$CONF_FILE" 2>/dev/null | tr -d ' ')"
+  cat "$CONF_FILE" 2>/dev/null
+  return 0
+}
+
+do_doctor() {
+  printf '=== Cirno Reclaim 自检 ===\n'
+  printf 'time      : %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
+  printf 'version   : %s\n' "$MODULE_VERSION"
+  printf 'module    : %s\n' "$MODDIR"
+  printf 'data      : %s\n' "$DATA_DIR"
+  printf 'PATH      : %s\n' "$PATH"
+  printf '\n[files]\n'
+  for _f in "$MODDIR/module.prop" "$MODDIR/config.conf" "$CONF_FILE" "$LOG_FILE" \
+            "$CR_BIN/reclaim.sh" "$CR_BIN/app_relief.sh" "$CR_BIN/cirno_daemon" "$CR_BIN/cirno_pageout"; do
+    if [ -e "$_f" ]; then
+      printf '  ok   %-58s %s bytes\n' "$_f" "$(wc -c <"$_f" 2>/dev/null | tr -d ' ')"
+    else
+      printf '  miss %-58s\n' "$_f"
+    fi
+  done
+  printf '\n[writable]\n'
+  printf '  sh        : %s\n' "$(command -v sh 2>/dev/null || echo missing)"
+  printf '  data dir  : %s\n' "$([ -w "$DATA_DIR" ] && echo writable || echo NOT-writable)"
+  printf '  log dir   : %s\n' "$([ -w "$LOG_DIR" ] && echo writable || echo NOT-writable)"
+  printf '  state dir : %s\n' "$([ -w "$STATE_DIR" ] && echo writable || echo NOT-writable)"
+  printf '\n[daemon]\n'
+  printf '  engine   : %s\n' "$(if cpp_daemon_ready; then echo cpp; else echo shell; fi)"
+  printf '  pid      : %s\n' "$(cat "$PID_FILE" 2>/dev/null)"
+  printf '  running  : %s\n' "$(proc_healthy "$PID_FILE" "$(daemon_cmdline_pat)" && echo yes || echo no)"
+  printf '  heartbeat: %ss ago\n' "$(since_epoch_file heartbeat)"
+  printf '  watchdog : %s (%ss ago)\n' "$(proc_healthy "$WD_PID_FILE" watchdog.sh && echo yes || echo no)" "$(since_epoch_file wd.heartbeat)"
+  printf '  supervisor: %s\n' "$(proc_cmdline_has "$(cat "$STATE_DIR/supervisor.pid" 2>/dev/null)" service.sh 2>/dev/null && echo yes || echo unknown)"
+  printf '\n[engine checks]\n'
+  printf '  pageout  : %s\n' "$(helper_ready && echo available || echo unavailable)"
+  if [ -x "$CR_BIN/cirno_pageout" ]; then
+    printf '  pageout probe: %s\n' "$("$CR_BIN/cirno_pageout" --probe 2>&1 | head -n 1)"
+  else
+    printf '  pageout probe: helper missing\n'
+  fi
+  if [ -x "$CR_BIN/cirno_daemon" ]; then
+    printf '  cpp daemon --check: %s\n' "$("$CR_BIN/cirno_daemon" --check 2>&1 | tr '\n' ' ')"
+  else
+    printf '  cpp daemon --check: binary missing (fallback = shell)\n'
+  fi
+  printf '\n[boot / install]\n'
+  printf '  post-fs-data: %ss ago\n' "$(since_epoch_file boot.postfs)"
+  printf '  service.sh  : %ss ago\n' "$(since_epoch_file boot.service)"
+  printf '  disable     : %s\n' "$([ -f "$MODDIR/disable" ] && echo present || echo no)"
+  printf '  remove      : %s\n' "$([ -f "$MODDIR/remove" ] && echo present || echo no)"
+  printf '  webroot     : %s\n' "$(ls -l "$MODDIR/webroot" 2>/dev/null | awk 'NR>1{printf "%s(%s) ", $9, $5}')"
+  printf '  bin         : %s\n' "$(ls -l "$CR_BIN" 2>/dev/null | awk 'NR>1{printf "%s(%s) ", $9, $5}')"
+  printf '\n[system]\n'
+  printf '  device   : %s %s\n' "$(getprop ro.product.brand 2>/dev/null)" "$(getprop ro.product.model 2>/dev/null)"
+  printf '  android  : %s (SDK %s)\n' "$(getprop ro.build.version.release 2>/dev/null)" "$(getprop ro.build.version.sdk 2>/dev/null)"
+  printf '  kernel   : %s\n' "$(uname -r 2>/dev/null)"
+  printf '  selinux  : %s\n' "$(getenforce 2>/dev/null)"
+  printf '  memory   : avail=%sMB total=%sMB swap=%s/%sMB\n' "$(mem_avail_mb)" "$(mem_total_mb)" "$(swap_free_mb)" "$(swap_total_mb)"
+  printf '  cgroup   : %s\n' "$([ -d /sys/fs/cgroup/apps ] && echo per-pid-freezer || echo no-apps-cgroup)"
+  printf '\n[config]\n'
+  if [ -r "$CONF_FILE" ]; then
+    printf '  size: %s bytes, invalid lines: %s\n' "$(wc -c <"$CONF_FILE" | tr -d ' ')" "0"
+    printf '  enable=%s dry_run=%s engine=%s interval=%s\n' "${enable:-?}" "${dry_run:-?}" "${daemon_engine:-?}" "${interval:-?}"
+  else
+    printf '  MISSING: %s\n' "$CONF_FILE"
+  fi
+  printf '\n[log tail 8]\n'
+  tail -n 8 "$LOG_FILE" 2>/dev/null || printf '  (no log yet)\n'
+  return 0
+}
+
 # ---------------------------------------------------------------- 命令分发
 case "$CMD" in
   status)
@@ -389,13 +581,32 @@ case "$CMD" in
     sh "$CR_BIN/app_relief.sh" "$@"
     ;;
   log)
-    tail -n "$(num "${1:-80}" 80)" "$LOG_FILE" 2>/dev/null
+    do_log "${1:-120}"
     ;;
   diag)
     do_diag
     ;;
+  doctor | selftest)
+    do_doctor
+    ;;
+  engine)
+    if cpp_daemon_ready; then
+      printf '{"engine":"cpp","cpp":1,"shell":1}\n'
+    else
+      printf '{"engine":"shell","cpp":0,"shell":1}\n'
+    fi
+    ;;
+  info)
+    do_info
+    ;;
+  snapshot)
+    do_snapshot
+    ;;
+  ui)
+    do_ui "${1:-get}"
+    ;;
   config)
-    cat "$CONF_FILE" 2>/dev/null
+    do_config
     ;;
   save)
     do_save
@@ -432,14 +643,14 @@ case "$CMD" in
     fi
     sleep 1
     printf '{"ok":1,"daemon":%s,"watchdog":%s}\n' \
-      "$(bool proc_healthy "$PID_FILE" daemon.sh)" "$(bool proc_healthy "$WD_PID_FILE" watchdog.sh)"
+      "$(bool proc_healthy "$PID_FILE" "$(daemon_cmdline_pat)")" "$(bool proc_healthy "$WD_PID_FILE" watchdog.sh)"
     ;;
   start)
     rm -f "$DATA_DIR/.stop" 2>/dev/null
     start_daemon
     start_watchdog
     printf '{"ok":1,"daemon":%s,"watchdog":%s}\n' \
-      "$(bool proc_healthy "$PID_FILE" daemon.sh)" "$(bool proc_healthy "$WD_PID_FILE" watchdog.sh)"
+      "$(bool proc_healthy "$PID_FILE" "$(daemon_cmdline_pat)")" "$(bool proc_healthy "$WD_PID_FILE" watchdog.sh)"
     ;;
   stop)
     : >"$DATA_DIR/.stop"

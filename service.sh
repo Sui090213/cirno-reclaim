@@ -4,7 +4,7 @@
 #  开机入口（late_start service）。职责：
 #    1. 等开机完成 + boot_delay；
 #    2. 应用 VM / zram / swap 调参；
-#    3. 拉起 daemon.sh 与 watchdog.sh；
+#    3. 拉起守护进程（默认 cirno_daemon，可回退 daemon.sh）与 watchdog.sh；
 #    4. 自己作为最外层守护循环，两个进程掉了都补回来。
 #  带 --resume 参数时跳过开机等待（由 watchdog 在 supervisor 死掉时调用）。
 # ============================================================================
@@ -25,6 +25,7 @@ if [ -n "$_p" ] && [ "$_p" != "$$" ] && pid_alive "$_p" && proc_cmdline_has "$_p
   exit 0
 fi
 st_write supervisor.pid "$$"
+st_write boot.service "$(date +%s)"
 
 _cleanup_done=0
 cleanup() {
@@ -99,7 +100,7 @@ while :; do
   _hb=$(since_epoch_file heartbeat)
   if [ "$_hb" -gt "$(( ${heartbeat_timeout:-180} * 3 ))" ]; then
     log "service: heartbeat stale (${_hb}s), restarting daemon"
-    stop_pidfile "$PID_FILE" daemon daemon.sh
+    stop_pidfile "$PID_FILE" daemon "$(daemon_cmdline_pat)"
     start_daemon
   fi
 

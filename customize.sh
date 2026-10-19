@@ -61,6 +61,7 @@ if command -v set_perm_recursive >/dev/null 2>&1; then
     [ -f "$f" ] && set_perm "$f" 0 0 0755
   done
   [ -f "$MODPATH/bin/cirno_pageout" ] && set_perm "$MODPATH/bin/cirno_pageout" 0 0 0755
+  [ -f "$MODPATH/bin/cirno_daemon" ] && set_perm "$MODPATH/bin/cirno_daemon" 0 0 0755
 else
   # 管理器没有提供 set_perm 时退回 chmod
   chmod -R 755 "$MODPATH" 2>/dev/null
@@ -112,10 +113,14 @@ case "$_arch" in
     [ -x "$MODPATH/bin/cirno_pageout" ] &&
       ui_print "- 页换出 helper: 已内置" ||
       ui_print "- 页换出 helper: 未内置（前台仅 trim，可自行编译）"
+    [ -x "$MODPATH/bin/cirno_daemon" ] &&
+      ui_print "- C++ 守护: 已内置（默认引擎）" ||
+      ui_print "- C++ 守护: 未内置，将回退到 Shell 守护"
     ;;
   *)
     [ -f "$MODPATH/bin/cirno_pageout" ] && rm -f "$MODPATH/bin/cirno_pageout"
-    ui_print "- 非 arm64 设备: 已移除 pageout helper，前台只做 trim"
+    [ -f "$MODPATH/bin/cirno_daemon" ] && rm -f "$MODPATH/bin/cirno_daemon"
+    ui_print "- 非 arm64 设备: 已移除原生组件，前台只做 trim、守护回退 shell"
     ;;
 esac
 
@@ -126,6 +131,8 @@ ui_print "  · 仍不够才结束最大的冻结应用"
 ui_print "  · 前台 trim + 限额页换出"
 ui_print "  · 三层保活：service → watchdog → daemon"
 ui_print "  · KsuWebUI：状态 / 设置 / 诊断"
+ui_print "  · C++ 守护调度，脚本只做具体回收"
+ui_print "  · KsuWebUI：控制台 / 场景 / 外观 / 关于"
 ui_print " "
 if grep -q "^dry_run=['\"]*1" "$CR_DATA/config.conf" 2>/dev/null; then
   ui_print "- 当前为演练模式：只记录不动手"

@@ -43,7 +43,7 @@ for _d in /proc/[0-9]*; do
   _c=$(tr '\0' ' ' <"$_d/cmdline" 2>/dev/null)
   case "$_c" in
     *"/data/adb/modules/cirno_reclaim/service.sh"*|\
-    *"/data/adb/modules/cirno_reclaim/bin/daemon.sh"*|\
+    *"/data/adb/modules/cirno_reclaim/bin/daemon.sh"*|*"/data/adb/modules/cirno_reclaim/bin/cirno_daemon"*|
     *"/data/adb/modules/cirno_reclaim/bin/watchdog.sh"*)
       kill -9 "$_p" 2>/dev/null
       ;;

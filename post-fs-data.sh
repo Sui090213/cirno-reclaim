@@ -8,6 +8,7 @@
 . "$(dirname "$0")/bin/common.sh"
 
 cr_init_dirs
+date +%s >"$STATE_DIR/boot.postfs" 2>/dev/null
 
 # 重启后旧 pid 全部失效
 rm -f "$PID_FILE" "$WD_PID_FILE" 2>/dev/null

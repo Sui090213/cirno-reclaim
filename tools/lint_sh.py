@@ -44,6 +44,8 @@ BASHISMS = [
     (re.compile(r"\becho\s+-[ne]+\b"), "warn", "建议用 printf 代替 echo -e"),
     (re.compile(r"\[\s[^\]]*\s==\s"), "warn", "在 [ ] 里应使用 ="),
     (re.compile(r"^\s*local\s+-\w"), "warn", "local -options 不是 POSIX"),
+    # mksh 会把 case 模式方括号里的 ; 当命令分隔符，导致整份脚本语法错误
+    (re.compile(r"\[[^\]\n]*;[^\]\n]*\]"), "error", "mksh: 方括号模式里不能出现 ;"),
 ]
 
 DELIMS = " \t\n;|&("

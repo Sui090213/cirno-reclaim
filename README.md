@@ -18,6 +18,11 @@
 > 跑过完整的自动化测试（`tests/sim.sh`，真实进程 + 真实 zram），**尚未在真机上验证**。
 > 首次安装默认是**演练模式**：只在日志里记录本来会做什么，不压缩、不结束任何进程。
 > 回滚：`touch /data/adb/modules/cirno_reclaim/disable` 后重启。
+> **状态**：v2.2.2。已通过 POSIX shell 静态检查、`node --check`、配置解析与打包结构校验，
+> **尚未在真机上完整验证**。首次刷入建议先设 `dry_run=1`、`zram_enable=0` 观察一轮，
+> 并先想好回滚方式（`touch /data/adb/modules/cirno_reclaim/disable` 后重启）。
+>
+> 审计与已知风险见 [SECURITY.md](SECURITY.md) 与 [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md)。
 
 ## 这是什么
 
@@ -58,12 +63,45 @@
 
 | 改动 | 原因 |
 |---|---|
-| **先压缩、后结束**（`reclaim_order=pageout_first`，默认） | 配合 Cirno「后台不死」的目标。压缩冻结应用（含 ART 堆，和 Android 对缓存进程做的 full compaction 一致）就够的话，一个都不杀 |
-| 大进程看门狗只压缩、不结束 | 原版在内存充足时也会结束单个超过 600MB 的冻结应用 |
-| 前台舒缓只在内存紧张时自动执行 | 原版内存充足时也每 90 秒压一次正在用的应用，这正是卡顿来源 |
-| 页换出 helper 修正 | 原版把「建议过的地址范围」当成换出量：上限不生效（实测设 64MB 换出 125MB），没有 swap 时也报告换出了上百 MB。现在按常驻匿名页分配预算，按 VmSwap 实际变化报告 |
-| helper 由源码重新编译 | zig 0.13 交叉编译，两次编译逐字节一致；不再使用来源不明的预编译文件 |
-| WebUI 改用异步执行 | 同步接口执行期间整个页面卡住；老管理器自动退回同步接口 |
+| 全 PID trim | `app_trim_all_pids=1`：对该包**所有**进程发 `am send-trim-memory`，不只是主进程 |
+| 多轮换出 | `app_pageout_passes=3`：每轮重新读 smaps、按当前 PSS 分配预算，越换越干净 |
+| 更大预算 | 单次上限 192MB（上游 128MB） |
+| 结果可验证 | 日志与 WebUI 都给出 `PSS before → after` 和可用内存增量，效果不好一眼能看出来 |
+| 失败自动降级 | helper 不可用 / 内核不支持时退化为纯 trim，不影响模块启动 |
+
+### 3. 模块偶尔「掉线」
+
+上游只有一个守护进程，被 LMK 杀掉或被系统清理后就没有任何东西会把它拉起来。
+
+现在改成三层保活，并且最里面那层换成了 **C++ 守护**：
+
+```
+service.sh（外层循环，30s 巡检）
+   └── watchdog.sh（心跳看护，30s 一次）
+          └── cirno_daemon（C++ 静态二进制，默认引擎）
+                 └── sh reclaim.sh / app_relief.sh（具体回收逻辑）
+```
+
+- `cirno_daemon` 用单调时钟调度，每 5 秒写心跳；子进程有硬超时，
+  `dumpsys` 卡住时直接 SIGKILL，不会把守护一起拖死；
+- `watchdog.sh` 检查 pid + 命令行 + 心跳年龄，超时就重启 daemon；
+- `service.sh` 检查前两者，掉了就补；
+- `watchdog` 也会反向检查 `service.sh`，它死了会 `service.sh --resume` 重新拉起；
+- 三者 `oom_score_adj` 都设为 `-900`，尽量不被 LMK 选中；
+- 所有重启都有 20s / 300s 的节流；`interval` / `heartbeat_timeout` 还会被 `cfg_clamp`
+  夹到安全区间（`interval ≥ 5s`、`heartbeat_timeout ≥ 3×interval`），正常配置不会出现重启风暴。
+- 配置 `daemon_engine=shell` 可以回退到原来的纯 shell 守护（没有 C++ 二进制的设备会自动回退）。
+
+WebUI 顶部的圆点就是守护状态，`控制台` 的圆环与心跳能看到 daemon 多久没动了。
+
+### 4. WebUI 太复杂
+
+重做成四页、无框架、无外部请求，布局参考 HyperOS 控制台：
+
+- **控制台**：圆环仪表（可用内存百分比）+ 两个数据块 + 四个动作按钮 + 设备信息 + 日志 + 自检；
+- **场景**：三个预设（保守 / 均衡 / 激进）+ 常用设置 + 高级参数折叠；
+- **外观**：跟随系统 / 浅色 / 深色、四种强调色、纯色或图片背景（链接或本地图片）、组件透明度；
+- **关于**：版本、反馈邮箱、一键复制诊断、写邮件、仓库地址。
 
 ---
 
@@ -150,7 +188,41 @@ APP RELIEF done pkg=com.ss.android.ugc.aweme pss=1120MB->980MB avail=900MB->1040
 | `vm_tune` / `zram_enable` | `0` / `0` | ColorOS 上 zram 无论如何都不动 |
 | `exclude_packages` | 见 `config.conf` | 增加了 ColorOS 系统应用前缀 |
 
-其余键与原版相同，完整说明见 `config.conf` 里的注释。
+### VM / 交换
+
+| 键 | 默认 | 说明 |
+|---|---:|---|
+| `vm_tune` | `1` | 总开关 |
+| `zram_enable` / `zram_disksize_mb` | `1` / `0` | 0 = 总内存一半，上限 6GB |
+| `zram_algorithm` | `lz4` | 不支持时自动回退 |
+| `swapfile_enable` / `swapfile_mb` | `0` / `2048` | 存储交换文件，默认关 |
+| `swappiness` | `80` | zram 为主时 80~150 都合理 |
+| `vfs_cache_pressure` | `100` | |
+| `dirty_writeback_centisecs` | `1500` | |
+| `dirty_expire_centisecs` | `500` | |
+| `page_cluster` | `1` | |
+| `io_tune` / `read_ahead_kb` | `0` / `128` | 与内存无关，默认关 |
+
+### 保活
+
+| 键 | 默认 | 说明 |
+|---|---:|---|
+| `keepalive` | `1` | 启用看门狗 |
+| `watchdog_interval` | `30` | 检查周期 |
+| `heartbeat_timeout` | `180` | 心跳多久没更新算掉线 |
+| `oom_protect` | `1` | 守护进程 `oom_score_adj=-900` |
+| `daemon_engine` | `cpp` | `cpp` = C++ 守护（推荐）；`shell` = 纯脚本守护 |
+
+### 名单
+
+| 键 | 说明 |
+|---|---|
+| `include_packages` | 只回收这些包；空 = 全部 |
+| `exclude_packages` | 永不回收，分号分隔，支持 `*`，**手动编辑要用单引号包住** |
+
+系统界面、输入法、桌面、电话、蓝牙、NFC、设置、GMS、Magisk/KernelSU 管理器、Cirno 本体都是硬保护，从名单里删掉也不会被回收。
+
+---
 
 ## 命令行
 
@@ -167,6 +239,44 @@ sh $ctl preset aggressive
 sh $ctl set dry_run=0
 sh $ctl restart | start | stop
 ```
+
+直接跑引擎也可以：
+
+```sh
+sh /data/adb/modules/cirno_reclaim/bin/reclaim.sh --scan
+sh /data/adb/modules/cirno_reclaim/bin/reclaim.sh --run --dry-run
+sh /data/adb/modules/cirno_reclaim/bin/app_relief.sh --force --json
+```
+
+---
+
+## WebUI
+
+KernelSU / KsuWebUIStandalone 打开模块即可，页面在 `webroot/`，纯静态、不联网。
+
+| 页 | 内容 |
+|---|---|
+| 控制台 | 圆环仪表（可用 %）、可用/Swap、累计回收与释放、守护引擎、页换出状态、立即回收、舒缓前台、扫描、重启、日志、自检 |
+| 场景 | 三个预设 + 常用 12 项 + 高级参数折叠 |
+| 外观 | 主题（跟随系统/浅色/深色）、强调色、背景（纯色/链接/本地图片）、组件透明度、圆角、背景遮罩、底栏样式、性能模式 |
+| 关于 | 版本、作者、反馈邮箱、复制诊断、写邮件、仓库地址 |
+
+底栏是浮动的**液态玻璃**胶囊（毛玻璃 + 高光 + 会滑动的药丸），可在外观页切成通栏长条。
+
+**卡顿处理**：卡片不再使用 `backdrop-filter`，模糊只保留在底栏；状态轮询 20 秒、日志 60 秒，
+内容没变就不重写 DOM；低端机可以在外观页打开「性能模式」，一次性关掉模糊、过渡动画和高光。
+
+日志页直接读取模块日志文件，带路径、大小、行数与最近 120 行；「自检」会输出
+路径 / 权限 / 守护引擎 / helper 探针 / 内核 / SELinux / 配置状态，反馈时一并复制即可。
+
+外观配置会写到 `/data/adb/cirno_reclaim/webui/theme.conf`（本地图片只保存在 WebView）。
+
+> 旧版本（v2.0.0）的 WebUI 只有「概览/设置/反馈」三页，日志区在配置读取失败时会空白；
+> v2.2.2 已改为四页并直接读取日志文件。
+
+诊断信息包括：机型、Android / 内核版本、root 方案、守护状态、pageout 可用性、内存与 swap、配置、统计、最近 40 行日志。
+
+---
 
 ## 反馈
 

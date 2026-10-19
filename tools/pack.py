@@ -23,7 +23,9 @@ EXCLUDE_COMMON = {".git", "dist", "log", "state", "__pycache__", "tmp-test"}
 EXCLUDE_SUFFIX = (".zip", ".log", ".pyc")
 EXCLUDE_NAME = {"nohup.out"}
 
-# 模块 zip 的白名单：少装构建脚本，但保留许可证与 helper 源码（GPL 要求）
+# 模块 zip 白名单：只放运行期需要的文件。
+# 说明：文档（README/SECURITY/CHANGELOG/docs）不进模块，避免刷入包里塞一堆说明；
+# 但 LICENSE 与两个原生组件的源码必须保留（GPL-3.0 对二进制分发的要求）。
 MODULE_FILES = {
     "module.prop",
     "customize.sh",
@@ -32,11 +34,7 @@ MODULE_FILES = {
     "uninstall.sh",
     "action.sh",
     "config.conf",
-    "README.md",
     "LICENSE",
-    "SECURITY.md",
-    "CHANGELOG.md",
-    "docs/SECURITY-AUDIT.md",
     "bin/common.sh",
     "bin/vm_tune.sh",
     "bin/reclaim.sh",
@@ -45,14 +43,16 @@ MODULE_FILES = {
     "bin/watchdog.sh",
     "bin/ctl.sh",
     "bin/cirno_pageout",
+    "bin/cirno_daemon",
     "src/cirno_pageout.c",
+    "src/cirno_daemon.cpp",
     "src/build.sh",
     "webroot/index.html",
     "webroot/style.css",
     "webroot/app.js",
 }
 
-EXEC_NAMES = {"bin/cirno_pageout"}
+EXEC_NAMES = {"bin/cirno_pageout", "bin/cirno_daemon"}
 
 
 def module_version() -> str:

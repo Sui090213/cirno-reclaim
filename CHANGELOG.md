@@ -2,6 +2,44 @@
 
 本项目从 v2.0.0 开始整合 **cirno-reclaim**（由 Cirno 派生）与 **HybridRAM**。
 
+## v2.0.0-coloros.1 — ColorOS 17 适配
+
+适配：yishisanren（基于 flyingr 的 v2.0.0）
+
+### 修复（原版在真机上无法运行）
+
+- `bin/common.sh` 的 `include_packages|exclude_packages` 校验与 `bin/reclaim.sh` 的
+  `REASON` 校验里，case 模式中的 `;`、空格、`(`、`)`、`<`、`>` 未转义，
+  mksh / busybox / dash / bash 全部解析失败。`common.sh` 被所有脚本加载，
+  busybox（KernelSU 执行 `service.sh` 的环境）下直接退出，守护进程从不启动。
+- `cirno_pageout`：把 `process_madvise` 的返回值（建议过的地址长度）当成换出量。
+  `--max-mb` 不生效（设 64MB 实测换出 125MB），没有 swap 时也报告换出上百 MB。
+  现在按常驻匿名页分配预算、按 VmSwap 实际变化报告。
+
+### ColorOS 17 / Cirno 适配
+
+- 冻结进程同时支持 `apps/uid_*/pid_*` 与 `uid_*/pid_*` 两种 cgroup 布局（与 Cirno `FrozenRW` 一致），
+  按 `cgroup.events` 的实际冻结状态判断（含 uid 层冻结）。
+- 冻结状态下直接 SIGKILL，不再先解冻等 1 秒；极少数收不到信号时才解冻重试。
+- ColorOS 上永不重建 zram；`vm_tune`、`zram_enable` 默认 0。
+- 硬保护名单加入 ColorOS 桌面、athena、电池、安全中心、HeyTap 推送 / 账号、KernelSU Next、LSPosed、Shizuku 等；
+  默认 `exclude_packages` 加入 `com.oplus.*`、`com.coloros.*`、`com.heytap.*`、`com.oppo.*`、`com.nearme.*`、`com.finshell.*`。
+- 诊断信息加入 ColorOS 版本、cgroup 布局与冻结数、zram / 内存扩展状态、前台识别、root 方案版本。
+
+### 行为变更
+
+- 新增 `reclaim_order`（默认 `pageout_first`）：先把冻结应用压进 zram（含 ART 堆），不够才结束进程。
+- 大进程看门狗在 `pageout_first` 下只压缩、不结束。
+- 前台舒缓只在内存紧张（低于阈值或 PSI 超标）时自动执行。
+- `deep_pageout_max_mb` 默认 96 → 256；首次安装 `dry_run=1`。
+- 手动回收时若还没有桌面 / 输入法保护名单，先现取一次。
+- WebUI：异步 `ksu.exec`（老管理器自动退回同步），演练模式提示，压缩量统计，反馈改为 GitHub Issue。
+
+### 工程
+
+- `tests/sim.sh`：在 Linux 上模拟 mksh + toybox 与 busybox 两种环境，真实进程 + 真实 zram 端到端测试。
+- `bin/cirno_pageout` 由 `src/cirno_pageout.c` 用 zig 0.13 重新编译（可复现）；`src/build.sh` 支持 pip 安装的 zig。
+
 ## v2.0.0 — 整合版
 
 作者：flyingr

@@ -9,7 +9,7 @@
 ## 反馈问题
 
 **优先用 GitHub Issue**（模板已经写好，会要求填机型 / 版本 / 日志），
-涉及 root 安全细节的请直接发邮件到 **asui20090213@outlook.com**，不要公开提交。
+涉及 root 安全细节的不要公开提交，见 [SECURITY.md](SECURITY.md) 第 9 节。
 
 Issue 里请附上：
 
@@ -55,12 +55,16 @@ tail -n 200 /data/adb/modules/cirno_reclaim/log/reclaim.log
 ### 3. 本地检查
 
 ```sh
-# shell 语法 + 结构 + bashism
-python3 tools/lint_sh.py .
+# 用设备上真正的 shell 解析（tools/lint_sh.py 曾经漏掉过导致整个模块无法运行的语法错误）
+for f in *.sh bin/*.sh; do mksh -n "$f" && busybox sh -n "$f" || echo "FAIL $f"; done
 
-# 如果本机有 shellcheck（强烈建议）
-find . -name '*.sh' -exec sh -n {} \;
-shellcheck -s sh bin/*.sh *.sh
+# shell 结构 + bashism
+python3 tools/lint_sh.py .
+shellcheck -s sh -S warning -e SC2034 bin/*.sh *.sh
+
+# 端到端模拟（root）：mksh + toybox，以及 KernelSU 的 busybox 环境
+sh tests/sim.sh mksh
+sh tests/sim.sh busybox
 
 # WebUI
 node --check webroot/app.js

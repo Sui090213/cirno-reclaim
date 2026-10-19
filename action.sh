@@ -22,4 +22,4 @@ echo "--------------------------------"
 echo "最新日志"
 sh "$CTL" log 20
 echo
-echo "反馈邮箱: asui20090213@outlook.com"
+echo "反馈: github.com/yishisanren/cirno-reclaim/issues"

@@ -1,2 +1,2 @@
-d805fa79effbb5b82929bf99dc7be9227cfc1cc7439ca77b1e80325416328ebc  Cirno-Reclaim-Hybrid-v2.0.0-source.zip
-e5a0652e5811154f4d91c63e910d8e7342fb67e47fd3510b87ae67ee42ac3d55  Cirno-Reclaim-Hybrid-v2.0.0.zip
+6fdfad6e4499d64a0ccf9c743ed3a3a17419e21447af7811fa5f166ceeca9823  Cirno-Reclaim-Hybrid-v2.0.0-coloros.1-source.zip
+d8b7ec0155b67d1f2b8b588bf400c7fbd3603bbce5d7f4897dc96d83a48f7e84  Cirno-Reclaim-Hybrid-v2.0.0-coloros.1.zip

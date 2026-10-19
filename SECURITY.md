@@ -45,7 +45,8 @@
 
 - 应用 UID：`uid % 100000 ∈ [10000, 19999]`（`allow_system_uid=1` 才放宽，默认关）；
 - `oom_score_adj >= 900`（缓存级）；
-- `only_frozen=1` 时要求 `cgroup.freeze = 1`（Cirno 已冻结）；
+- `only_frozen=1` 时要求进程处于冻结状态（`cgroup.events` 的 `frozen 1`，或 `cgroup.freeze = 1`；
+  `apps/uid_*/pid_*` 与 `uid_*/pid_*` 两种布局都认）；
 - 非当前前台包（`protect_foreground=1`）；
 - 不在硬保护名单、不在 `exclude_packages`、命中 `include_packages`（若配置）；
 - `PSS >= min_process_mb`；
@@ -56,20 +57,29 @@
 ### 3.2 硬编码保护
 
 `android`、`com.android.systemui`、`com.android.shell`、电话 / 电信 / 蓝牙 / NFC / 设置 /
-权限控制器 / GMS、Magisk / KernelSU / KernelSU Next / SukiSU / APatch 管理器、KsuWebUI、Cirno 本体，
+权限控制器 / GMS、Magisk / KernelSU / KernelSU Next / SukiSU / APatch 管理器、KsuWebUI、LSPosed、Shizuku、Cirno 本体，
+ColorOS 的桌面、athena、电池、安全中心、HeyTap 推送 / 账号等组件，
 以及运行时解析出的**桌面**与**默认输入法**。
 
 ### 3.3 前台舒缓（永不结束进程）
 
+- 只在内存紧张时自动执行（手动按钮除外）；
 - 只发 `am send-trim-memory`；
-- 只对私有匿名页做 `MADV_PAGEOUT`；
+- 只对私有匿名页做 `MADV_PAGEOUT`，总量严格受 `app_pageout_max_mb` 限制（按常驻匿名页记账）；
 - 跳过 stack / vdso / vvar / code / GPU / Dalvik / JIT / `/dev/` / `/system/` / `/apex/`；
 - 内核不支持时自动降级为纯 trim。
 
 ### 3.4 竞态检查
 
-解冻后、kill 前重新核对 `oom_score_adj`、包名、前台状态；
-pid 被复用的情况用「pid + starttime」和命令行校验排除。
+kill 前重新核对 starttime、`oom_score_adj`、保护名单、前台状态与冻结状态。
+冻结状态下直接 SIGKILL（cgroup v2 冻结进程可被致命信号结束），不先解冻，
+因此没有「解冻后应用运行」的窗口；只有 1 秒后仍存活时才解冻重试，失败则冻回去。
+pid 被复用的情况用「pid + starttime」校验排除。
+
+### 3.4.1 冻结进程换出
+
+`deep_reclaim` 只换出**已冻结**候选的私有匿名页（含 ART 堆，与 Android 对缓存进程的 full compaction 一致），
+受 `deep_pageout_max_mb` 限制；进程不结束，下次访问时由内核换回。
 
 ### 3.5 文件权限
 
@@ -120,7 +130,8 @@ pid 被复用的情况用「pid + starttime」和命令行校验排除。
 | 误杀后台 | 下次打开冷启动 | 选 `conservative` 预设，或调高 `min_frozen_min` |
 | 前台页换出 | 偶发缺页/卡顿 | `app_pageout=0` |
 | `drop_caches` | IO 变慢 | 默认关，冷却 1800s |
-| zram 重建 | 续航/性能变化 | `zram_enable=0`，或手动指定 `zram_disksize_mb` |
+| zram 重建 | 续航/性能变化 | 默认关；ColorOS 上无论配置如何都不重建 |
+| 冻结应用被压缩 | 切回时短暂缺页 | `deep_reclaim=0` 或调小 `deep_pageout_max_mb` |
 | `swapfile_enable=1` | 占用存储、闪存写入 | 默认关 |
 | `allow_system_uid=1` | 可能杀系统进程 | 默认关，不建议开 |
 | 配置文件被 root 应用篡改 | 等于 root 执行 | 目录 `0700`，且加载前有准入校验 |
@@ -183,8 +194,10 @@ pid 被复用的情况用「pid + starttime」和命令行校验排除。
 
 ## 9. 报告漏洞
 
-请**不要**公开提交可复现的 root 利用细节，直接发邮件：
+本分支（ColorOS 17 适配）的问题请到 <https://github.com/yishisanren/cirno-reclaim/issues>。
+请**不要**在公开 Issue 里贴可复现的 root 利用细节：先开一个不含细节的 Issue 说明需要私下沟通，
+或使用仓库的 GitHub Security Advisory（私密报告）。
 
-**asui20090213@outlook.com**
+原版（flyingr）通用逻辑的问题也可以联系原作者：asui20090213@outlook.com。
 
-邮件请包含：受影响版本、复现步骤、影响范围、你的修复建议。
+请包含：受影响版本、复现步骤、影响范围、你的修复建议。

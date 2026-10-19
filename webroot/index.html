@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0b1020">
-<title>Cirno Reclaim</title>
+<title>Cirno Reclaim · ColorOS</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -40,16 +40,16 @@
     </div>
 
     <div class="stat-grid">
-      <div class="card stat"><b id="stKills">0</b><span>累计回收</span></div>
+      <div class="card stat"><b id="stPaged">0</b><span>累计压缩 MB</span></div>
+      <div class="card stat"><b id="stKills">0</b><span>结束进程</span></div>
       <div class="card stat"><b id="stFreed">0</b><span>累计释放 MB</span></div>
-      <div class="card stat"><b id="stApp">0</b><span>前台释放 MB</span></div>
       <div class="card stat"><b id="stHb">--</b><span>守护心跳</span></div>
     </div>
 
     <div class="btn-grid">
       <button class="btn primary" id="btnRun">
         <span class="btn-t">立即回收</span>
-        <span class="btn-s">结束冻结的缓存进程</span>
+        <span class="btn-s">先压缩冻结的应用，不够再结束</span>
       </button>
       <button class="btn" id="btnRelief">
         <span class="btn-t">舒缓前台</span>
@@ -86,7 +86,7 @@
         <button class="chip active" data-preset="balanced">均衡</button>
         <button class="chip" data-preset="aggressive">激进</button>
       </div>
-      <p class="muted small mt8">觉得回收太少就选「激进」：阈值更高、冻结 2 分钟即可回收、单轮最多 6 个。</p>
+      <p class="muted small mt8">三档都是「先压缩、不够再结束」。觉得还卡就选「激进」：更早动手、单次压缩更多。</p>
     </div>
 
     <div class="card">
@@ -109,11 +109,11 @@
 
     <div class="card feedback-hero">
       <h2>遇到问题？</h2>
-      <p class="muted">把诊断信息发到下面的邮箱，作者会尽快看。</p>
-      <a class="mail" href="mailto:asui20090213@outlook.com" id="mailLink">asui20090213@outlook.com</a>
+      <p class="muted">复制诊断信息，连同问题描述一起提到 GitHub Issue。</p>
+      <span class="mail" id="repoLink">github.com/yishisanren/cirno-reclaim</span>
       <div class="btn-grid two mt12">
-        <button class="btn primary" id="btnMail">写邮件</button>
-        <button class="btn ghost" id="btnCopyDiag">复制诊断信息</button>
+        <button class="btn primary" id="btnCopyDiag">复制诊断信息</button>
+        <button class="btn ghost" id="btnCopyRepo">复制 Issue 链接</button>
       </div>
     </div>
 
@@ -124,7 +124,7 @@
         <li>用的是 Magisk / KernelSU / APatch，以及版本号</li>
         <li>出现问题的场景（游戏、切后台、息屏、开机多久）</li>
         <li>日志：概览页最下面的「运行日志」</li>
-        <li>诊断信息：点上面的「复制诊断信息」，粘贴到邮件里</li>
+        <li>诊断信息：点上面的「复制诊断信息」，粘贴到 Issue 里</li>
       </ul>
     </div>
 
@@ -136,8 +136,8 @@
     <div class="card">
       <div class="card-head"><span>开源</span></div>
       <p class="muted small">
-        本项目以 GPL-3.0 开源，欢迎提交 Issue 和 PR。<br>
-        仓库地址：<span id="repoUrl">github.com/flyingr/Cirno-Reclaim-Hybrid</span>
+        本项目以 GPL-3.0 开源。原作者 flyingr（Cirno Reclaim Hybrid），
+        ColorOS 17 适配分支：<span id="repoUrl">github.com/yishisanren/cirno-reclaim</span>
       </p>
     </div>
 

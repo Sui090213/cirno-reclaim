@@ -9,6 +9,33 @@
 
 ---
 
+## v2.0.0-coloros.1（ColorOS 17 适配）
+
+> 审计环境：Linux 虚拟机，有 mksh / busybox / dash / toybox / BWK awk / zram，
+> **无 ColorOS 真机**。结论来自真实 shell 解析、`tests/sim.sh` 端到端模拟（真实进程、真实 UID、
+> 真实 zram）、helper 实测与 qemu 下的 arm64 解析对比。
+
+| 编号 | 发现 | 处理 |
+|---|---|---|
+| C-1 | `common.sh`、`reclaim.sh` 的 case 模式含未转义的 `;`、空格、`(`、`<`，四种 shell 全部解析失败，模块从未真正运行 | 转义；所有脚本纳入 mksh / busybox / dash 解析检查 |
+| C-2 | helper 用 `process_madvise` 返回值记账：预算不生效（64MB → 实际 125MB）、无 swap 时虚报 | 按常驻匿名页分配预算，按 VmSwap 实际变化报告 |
+| C-3 | 冻结进程只认 `apps/` 布局、只看 pid 层 `cgroup.freeze` | 两种布局 + `cgroup.events`，与 Cirno 一致 |
+| C-4 | 解冻后再杀：应用会运行 1 秒，Cirno 的冻结记录与实际不一致 | 冻结状态下直接 SIGKILL，仅在失败时解冻重试 |
+| C-5 | 回收途中只看 MemAvailable：刚释放的页在 per-CPU 缓存里不计入，实测换出 400MB 后只涨 ~130MB，导致多杀 | 用「起点 + 实际释放量（换出量 − zram 增量、被杀进程 PSS）」估算，与实测取大 |
+| C-6 | 内存充足时也压前台应用、结束单个大冻结应用 | 前台舒缓只在紧张时自动执行；大进程看门狗只压缩 |
+| C-7 | ColorOS 的 zram（内存扩展）可能被 reset / 重建 | ColorOS 上永不触碰 zram；`vm_tune` 默认关 |
+
+### 真机待验证
+
+- ColorOS 17 上实际的 cgroup 布局（`apps/` 还是根目录）与 `cgroup.events` 是否存在；
+- `dumpsys activity` 的前台输出格式；
+- 内核是否允许 root 对其他应用 `process_madvise`（SELinux / KernelSU 策略）；
+- ColorOS 内存扩展的写回是否影响换出后的可用内存估算。
+
+以上都能从 WebUI「反馈 → 复制诊断信息」里看到。
+
+---
+
 ## v2.0.0
 
 ### 审计经过

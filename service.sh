@@ -55,7 +55,7 @@ if [ "$RESUME" = "0" ]; then
 fi
 
 # 总开关关闭时不要碰系统内存参数
-if [ "${enable:-1}" = "1" ] && [ "${vm_tune:-1}" = "1" ]; then
+if [ "${enable:-1}" = "1" ] && [ "${vm_tune:-0}" = "1" ]; then
   if [ "$RESUME" = "0" ]; then
     sh "$CR_BIN/vm_tune.sh" apply
   else

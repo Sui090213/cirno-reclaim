@@ -8,8 +8,8 @@ SKIPUNZIP=0
 
 ui_print " "
 ui_print "=============================================="
-ui_print "   Cirno Reclaim Hybrid v2.0.0"
-ui_print "   作者: flyingr"
+ui_print "   Cirno Reclaim Hybrid v2.0.0-coloros.1"
+ui_print "   作者: flyingr · ColorOS 17 适配: yishisanren"
 ui_print "=============================================="
 ui_print " "
 
@@ -34,6 +34,19 @@ if [ -z "$_arch" ]; then
   esac
 fi
 ui_print "- 架构: ${_arch:-unknown}"
+
+_oplusrom=$(getprop ro.build.version.oplusrom 2>/dev/null)
+if [ -n "$_oplusrom" ] || [ -d /my_product ]; then
+  ui_print "- 系统: ColorOS ${_oplusrom:-} ($(getprop ro.product.model 2>/dev/null))"
+  ui_print "  · 不接管系统的「内存扩展」（zram），不改系统内存参数"
+else
+  ui_print "- 系统: 非 ColorOS（本分支针对 ColorOS 17 适配，其他系统未验证）"
+fi
+if pm list packages 2>/dev/null | grep -q 'nep.timeline.cirno'; then
+  ui_print "- Cirno: 已安装"
+else
+  ui_print "- Cirno: 未检测到（没有冻结的进程，本模块基本不会动作）"
+fi
 ui_print " "
 
 ui_print "- 设置文件权限"
@@ -108,15 +121,20 @@ esac
 
 ui_print " "
 ui_print "- 功能概览"
-ui_print "  · 冻结进程回收（Cirno cgroup v2 freezer）"
-ui_print "  · 前台 trim + 多轮匿名页换出"
-ui_print "  · zram / swapfile / VM 调参"
+ui_print "  · 内存紧张时先把 Cirno 冻结的应用压进 zram（不杀）"
+ui_print "  · 仍不够才结束最大的冻结应用"
+ui_print "  · 前台 trim + 限额页换出"
 ui_print "  · 三层保活：service → watchdog → daemon"
-ui_print "  · KsuWebUI：状态 / 设置 / 问题反馈"
+ui_print "  · KsuWebUI：状态 / 设置 / 诊断"
 ui_print " "
+if grep -q "^dry_run=['\"]*1" "$CR_DATA/config.conf" 2>/dev/null; then
+  ui_print "- 当前为演练模式：只记录不动手"
+  ui_print "  观察一两天日志，再到 WebUI「设置」关闭演练模式"
+  ui_print " "
+fi
 ui_print "- 设置目录: $CR_DATA"
 ui_print "- 日志: /data/adb/modules/cirno_reclaim/log/reclaim.log"
-ui_print "- 反馈邮箱: asui20090213@outlook.com"
+ui_print "- 反馈: github.com/yishisanren/cirno-reclaim/issues"
 ui_print " "
 ui_print "- 安装完成，重启后生效"
 ui_print "=============================================="

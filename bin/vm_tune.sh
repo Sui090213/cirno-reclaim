@@ -79,7 +79,13 @@ zram_disksize_bytes() {
 }
 
 setup_zram() {
-  [ "${zram_enable:-1}" = "1" ] || return 0
+  [ "${zram_enable:-0}" = "1" ] || return 0
+  # ColorOS 的「内存扩展」= zram + 把冷页写回存储（hybridswap），由系统守护进程管理。
+  # reset / 重建 zram0 会把它整套打断，所以在 ColorOS 上无论配置如何都不碰 zram。
+  if is_coloros; then
+    log "VM zram: ColorOS manages zram (memory extension), skipped"
+    return 0
+  fi
   find_zram || { log "VM zram: no zram device, skipped"; return 0; }
 
   if zram_in_use; then
@@ -146,7 +152,7 @@ setup_zram() {
 }
 
 setup_swapfile() {
-  [ "${swapfile_enable:-1}" = "1" ] || return 0
+  [ "${swapfile_enable:-0}" = "1" ] || return 0
   _mb=${swapfile_mb:-2048}
   [ "$_mb" -ge 256 ] 2>/dev/null || _mb=256
   _f="$DATA_DIR/swapfile"
@@ -264,8 +270,9 @@ apply_vm_params() {
 }
 
 vm_apply() {
-  [ "${vm_tune:-1}" = "1" ] || { log "VM: vm_tune=0, skipped"; return 0; }
+  [ "${vm_tune:-0}" = "1" ] || { log "VM: vm_tune=0, skipped"; return 0; }
   log "VM: applying tuning (total=$(mem_total_mb)MB)"
+  is_coloros && log "VM: WARN ColorOS also tunes swappiness/zram itself; values may be overridden"
   setup_zram
   setup_swapfile
   apply_vm_params
@@ -274,10 +281,10 @@ vm_apply() {
 }
 
 vm_reassert() {
-  [ "${vm_tune:-1}" = "1" ] || return 0
+  [ "${vm_tune:-0}" = "1" ] || return 0
   apply_vm_params
   # swap 整个消失时才重建，且 10 分钟内不重复尝试，避免和用户手动关闭打架
-  if [ "${zram_enable:-1}" = "1" ] && find_zram; then
+  if [ "${zram_enable:-0}" = "1" ] && ! is_coloros && find_zram; then
     if [ "$(swap_total_mb)" = "0" ] && [ "$(since_epoch_file zram_retry)" -gt 600 ]; then
       date +%s >"$STATE_DIR/zram_retry" 2>/dev/null
       log "VM: swap is gone, re-applying zram"

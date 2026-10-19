@@ -21,6 +21,8 @@
 cr_init_dirs
 cfg_load
 
+REPO_URL="https://github.com/yishisanren/cirno-reclaim"
+
 CMD=${1:-status}
 [ $# -gt 0 ] && shift
 
@@ -52,7 +54,10 @@ status_json() {
   _hb=$(since_epoch_file heartbeat)
   _wd=$(since_epoch_file wd.heartbeat)
   _po=$(bool helper_ready)
-  printf '{"ok":1,"version":"%s","avail":%s,"total":%s,"swap_total":%s,"swap_free":%s,"psi":%s,"daemon":%s,"watchdog":%s,"hb_age":%s,"wd_age":%s,"enable":%s,"dry_run":%s,"screen_off_only":%s,"mem_low":%s,"mem_target":%s,"total_freed":%s,"total_kills":%s,"total_app_freed":%s,"last_run":%s,"last_freed":%s,"last_kills":%s,"last_reason":"%s","last_avail":%s,"last_app_pkg":"%s","last_app_freed":%s,"pageout":%s,"profile":"%s","zram":%s,"swapfile":%s}\n' \
+  cg_detect_layout
+  _cg=0
+  [ -n "$CR_CG_APPS" ] && _cg=1
+  printf '{"ok":1,"version":"%s","avail":%s,"total":%s,"swap_total":%s,"swap_free":%s,"psi":%s,"daemon":%s,"watchdog":%s,"hb_age":%s,"wd_age":%s,"enable":%s,"dry_run":%s,"screen_off_only":%s,"mem_low":%s,"mem_target":%s,"total_freed":%s,"total_kills":%s,"total_app_freed":%s,"last_run":%s,"last_freed":%s,"last_kills":%s,"last_reason":"%s","last_avail":%s,"last_app_pkg":"%s","last_app_freed":%s,"pageout":%s,"profile":"%s","zram":%s,"swapfile":%s,"total_paged":%s,"last_paged":%s,"order":"%s","coloros":%s,"cgroup":%s}\n' \
     "$MODULE_VERSION" \
     "$(mem_avail_mb)" "$(mem_total_mb)" "$(swap_total_mb)" "$(swap_free_mb)" \
     "$(psi_some_avg10)" "$_d" "$_w" "$_hb" "$_wd" \
@@ -62,7 +67,9 @@ status_json() {
     "$(num "$(st_read last_run)")" "$(num "$(st_read last_freed_mb)")" "$(num "$(st_read last_kills)")" \
     "$(st_read last_reason)" "$(num "$(st_read last_avail)")" \
     "$(st_read last_app_pkg)" "$(num "$(st_read last_app_freed)")" \
-    "$_po" "${profile:-balanced}" "$(num "${zram_enable:-1}")" "$(num "${swapfile_enable:-0}")"
+    "$_po" "${profile:-balanced}" "$(num "${zram_enable:-0}")" "$(num "${swapfile_enable:-0}")" \
+    "$(num "$(st_read total_paged_mb)")" "$(num "$(st_read last_paged_mb)")" "${reclaim_order:-pageout_first}" \
+    "$(bool is_coloros)" "$_cg"
 }
 
 status_text() {
@@ -72,10 +79,13 @@ status_text() {
   printf 'memory    : avail=%sMB total=%sMB swap=%s/%sMB psi=%s\n' \
     "$(mem_avail_mb)" "$(mem_total_mb)" "$(swap_free_mb)" "$(swap_total_mb)" "$(psi_some_avg10)"
   printf 'trigger   : low=%sMB target=%sMB\n' "$(mem_low_threshold_mb)" "$(mem_target_threshold_mb)"
-  printf 'totals    : reclaimed=%s procs, freed=%sMB, app_freed=%sMB\n' \
-    "$(num "$(st_read total_kills)")" "$(num "$(st_read total_freed_mb)")" "$(num "$(st_read total_app_freed)")"
-  printf 'last run  : %sMB freed, %s procs, reason=%s\n' \
-    "$(num "$(st_read last_freed_mb)")" "$(num "$(st_read last_kills)")" "$(st_read last_reason)"
+  printf 'mode      : order=%s dry_run=%s\n' "${reclaim_order:-pageout_first}" "${dry_run:-0}"
+  printf 'totals    : reclaimed=%s procs, paged=%sMB, freed=%sMB, app_freed=%sMB\n' \
+    "$(num "$(st_read total_kills)")" "$(num "$(st_read total_paged_mb)")" \
+    "$(num "$(st_read total_freed_mb)")" "$(num "$(st_read total_app_freed)")"
+  printf 'last run  : %sMB freed, %sMB paged, %s procs, reason=%s\n' \
+    "$(num "$(st_read last_freed_mb)")" "$(num "$(st_read last_paged_mb)")" \
+    "$(num "$(st_read last_kills)")" "$(st_read last_reason)"
 }
 
 # ---------------------------------------------------------------- 配置写入
@@ -103,6 +113,7 @@ validate_value() {
     max_kills_per_run) [ "$_v" -le 64 ] || return 1 ;;
     max_kills_per_hour) [ "$_v" -le 512 ] || return 1 ;;
     min_frozen_min) [ "$_v" -le 1440 ] || return 1 ;;
+    deep_pageout_max_mb) [ "$_v" -le 4096 ] || return 1 ;;
     max_rounds) [ "$_v" -ge 1 ] && [ "$_v" -le 20 ] || return 1 ;;
   esac
   return 0
@@ -174,7 +185,9 @@ max_kills_per_run=2
 max_kills_per_hour=8
 min_frozen_min=15
 min_process_mb=96
-deep_reclaim=0
+deep_reclaim=1
+deep_pageout_max_mb=128
+reclaim_order=pageout_first
 drop_caches=0
 app_pss_mb=1200
 app_pageout=0
@@ -196,6 +209,8 @@ max_kills_per_hour=20
 min_frozen_min=5
 min_process_mb=48
 deep_reclaim=1
+deep_pageout_max_mb=256
+reclaim_order=pageout_first
 drop_caches=0
 app_pss_mb=900
 app_pageout=1
@@ -218,6 +233,8 @@ max_kills_per_hour=36
 min_frozen_min=2
 min_process_mb=32
 deep_reclaim=1
+deep_pageout_max_mb=512
+reclaim_order=pageout_first
 drop_caches=1
 app_pss_mb=700
 app_pageout=1
@@ -260,32 +277,98 @@ do_save() {
 }
 
 # ---------------------------------------------------------------- 诊断信息
+# root 方案的版本：KernelSU 系列有 ksud，APatch 有 apd
+root_info() {
+  _r=""
+  for _b in /data/adb/ksud /data/adb/ksu/bin/ksud; do
+    if [ -x "$_b" ]; then
+      _r="ksu=$("$_b" -V 2>/dev/null | head -n 1)"
+      break
+    fi
+  done
+  [ -x /data/adb/apd ] && _r="$_r apatch=$(/data/adb/apd -V 2>/dev/null | head -n 1)"
+  _m=$(magisk -v 2>/dev/null)
+  [ -n "$_m" ] && _r="$_r magisk=$_m"
+  printf '%s' "${_r:-unknown}"
+}
+
+# 应用 cgroup 里一共有多少个进程、多少个处于冻结
+cg_counts() {
+  cg_detect_layout
+  [ -n "$CR_CG_APPS" ] || { printf 'layout=not-found'; return 0; }
+  _n=0
+  _f=0
+  for _d in "$CR_CG_APPS"/uid_*/pid_*; do
+    [ -d "$_d" ] || continue
+    _u=${_d%/pid_*}
+    _u=${_u##*/uid_}
+    case "$_u" in ''|*[!0-9]*) continue ;; esac
+    _u=$((_u % 100000))
+    [ "$_u" -ge 10000 ] && [ "$_u" -le 19999 ] || continue
+    _n=$((_n + 1))
+    cg_dir_frozen "$_d" && _f=$((_f + 1))
+  done
+  printf 'root=%s app_procs=%s frozen=%s' "$CR_CG_APPS" "$_n" "$_f"
+}
+
 do_diag() {
   printf '=== Cirno Reclaim Hybrid 诊断信息 ===\n'
   printf 'module    : %s (%s)\n' "$MODULE_VERSION" "$(date '+%Y-%m-%d %H:%M:%S')"
-  printf 'device    : %s %s\n' "$(getprop ro.product.brand 2>/dev/null)" "$(getprop ro.product.model 2>/dev/null)"
+  printf 'device    : %s %s (%s)\n' "$(getprop ro.product.brand 2>/dev/null)" "$(getprop ro.product.model 2>/dev/null)" \
+    "$(getprop ro.soc.model 2>/dev/null)"
   printf 'android   : %s (SDK %s)\n' "$(getprop ro.build.version.release 2>/dev/null)" "$(getprop ro.build.version.sdk 2>/dev/null)"
-  printf 'rom       : %s\n' "$(getprop ro.build.display.id 2>/dev/null)"
+  printf 'rom       : %s / oplusrom=%s\n' "$(getprop ro.build.display.id 2>/dev/null)" \
+    "$(getprop ro.build.version.oplusrom 2>/dev/null)"
+  printf 'coloros   : %s\n' "$(is_coloros && echo yes || echo no)"
   printf 'kernel    : %s\n' "$(uname -r 2>/dev/null)"
   printf 'arch      : %s\n' "$(uname -m 2>/dev/null)"
-  printf 'root      : magisk=%s ksu=%s apatch=%s\n' "$(getprop ro.magisk.version 2>/dev/null || echo -)" "$(getprop ro.kernelsu.version 2>/dev/null || echo -)" "-"
+  printf 'root      : %s\n' "$(root_info)"
   printf 'daemon    : %s\n' "$(proc_healthy "$PID_FILE" daemon.sh && echo running || echo stopped)"
   printf 'watchdog  : %s\n' "$(proc_healthy "$WD_PID_FILE" watchdog.sh && echo running || echo stopped)"
-  printf 'pageout   : %s\n' "$(helper_ready && echo available || echo unavailable)"
+  if [ -x "$HELPER" ]; then
+    printf 'pageout   : %s\n' "$("$HELPER" --probe 2>&1 | head -n 1)"
+  else
+    printf 'pageout   : helper missing\n'
+  fi
   printf 'memory    : avail=%sMB total=%sMB swap=%s/%sMB psi=%s\n' \
     "$(mem_avail_mb)" "$(mem_total_mb)" "$(swap_free_mb)" "$(swap_total_mb)" "$(psi_some_avg10)"
   printf 'cirno     : %s\n' "$(pm list packages 2>/dev/null | grep -c 'nep.timeline.cirno')"
-  printf '\n--- /proc/swaps ---\n'
+  printf 'cgroup    : %s\n' "$(cg_counts)"
+  printf 'foreground: %s\n' "$(fg_pkg 2>/dev/null)"
+  printf 'mode      : order=%s dry_run=%s vm_tune=%s\n' "${reclaim_order:-pageout_first}" "${dry_run:-0}" "${vm_tune:-0}"
+
+  printf '\n--- swap / zram ---\n'
   cat /proc/swaps 2>/dev/null
+  for _z in /sys/block/zram*; do
+    [ -d "$_z" ] || continue
+    printf '%s: disksize=%s alg=%s\n' "${_z##*/}" "$(cat "$_z/disksize" 2>/dev/null)" "$(cat "$_z/comp_algorithm" 2>/dev/null)"
+    printf '  mm_stat=%s\n' "$(cat "$_z/mm_stat" 2>/dev/null)"
+    # sysfs / memcg 的文件名都是简单字母数字
+    # shellcheck disable=SC2010
+    printf '  extra=%s\n' "$(ls "$_z" 2>/dev/null | grep -iE 'hybrid|writeback|backing|swapd' | tr '\n' ' ')"
+  done
+  printf 'vm        : swappiness=%s page-cluster=%s watermark_scale=%s min_free_kb=%s extra_free_kb=%s\n' \
+    "$(cat /proc/sys/vm/swappiness 2>/dev/null)" "$(cat /proc/sys/vm/page-cluster 2>/dev/null)" \
+    "$(cat /proc/sys/vm/watermark_scale_factor 2>/dev/null)" "$(cat /proc/sys/vm/min_free_kbytes 2>/dev/null)" \
+    "$(cat /proc/sys/vm/extra_free_kbytes 2>/dev/null)"
+  # sysfs / memcg 的文件名都是简单字母数字
+  # shellcheck disable=SC2010
+  printf 'memcg     : %s\n' "$(ls /dev/memcg 2>/dev/null | grep -iE 'swap|hybrid|reclaim|zram' | head -n 20 | tr '\n' ' ')"
+  printf 'psi       : %s\n' "$(tr '\n' ' ' </proc/pressure/memory 2>/dev/null)"
+  printf '\n--- props ---\n'
+  getprop 2>/dev/null | grep -iE 'zram|swap|hybrid|nandswap|lmk|athena|hans|freezer' | head -n 40
+
   printf '\n--- config ---\n'
   grep -v '^[[:space:]]*#' "$CONF_FILE" 2>/dev/null | grep -v '^[[:space:]]*$'
   printf '\n--- stats ---\n'
-  printf 'total_kills=%s total_freed_mb=%s total_app_freed=%s wd_restarts=%s\n' \
-    "$(num "$(st_read total_kills)")" "$(num "$(st_read total_freed_mb)")" \
+  printf 'total_kills=%s total_paged_mb=%s total_freed_mb=%s total_app_freed=%s wd_restarts=%s\n' \
+    "$(num "$(st_read total_kills)")" "$(num "$(st_read total_paged_mb)")" "$(num "$(st_read total_freed_mb)")" \
     "$(num "$(st_read total_app_freed)")" "$(num "$(st_read wd_restarts)")"
+  printf '\n--- scan ---\n'
+  sh "$CR_BIN/reclaim.sh" --scan 2>/dev/null | head -n 15
   printf '\n--- log (last 40) ---\n'
   tail -n 40 "$LOG_FILE" 2>/dev/null
-  printf '\n=== 请把以上内容发到 asui20090213@outlook.com ===\n'
+  printf '\n=== 反馈：%s/issues ===\n' "$REPO_URL"
 }
 
 # ---------------------------------------------------------------- 命令分发

@@ -55,5 +55,5 @@ fi
 # 首次安装时清一次缓存探测结果
 [ -d "$STATE_DIR" ] && chmod 700 "$STATE_DIR" 2>/dev/null
 
-log "post-fs-data: done v$MODULE_VERSION"
+log "post-fs-data: done $MODULE_VERSION"
 exit 0

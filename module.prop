@@ -1,6 +1,6 @@
 id=cirno_reclaim
-name=Cirno Reclaim Hybrid
-version=v2.0.0
-versionCode=20000
-author=flyingr
-description=Unified memory reclaim for Cirno: frozen-app reclaim, aggressive foreground relief, zram/swap tuning, self-healing keep-alive and a simple WebUI. Supports Magisk, KernelSU and APatch.
+name=Cirno Reclaim Hybrid (ColorOS 17)
+version=v2.0.0-coloros.1
+versionCode=20001
+author=flyingr, ColorOS port by yishisanren
+description=Memory reclaim companion for the Cirno freezer, adapted for ColorOS 17: pages out frozen apps first and kills only when memory is still short, leaves ColorOS memory extension alone, simple WebUI. First install runs in dry-run mode.

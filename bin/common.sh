@@ -34,6 +34,8 @@ LOCK_DAEMON="$DATA_DIR/lock.daemon"
 LOCK_WATCHDOG="$DATA_DIR/lock.watchdog"
 LOCK_RECLAIM="$DATA_DIR/lock.reclaim"
 HELPER="$CR_BIN/cirno_pageout"
+# cgroup v2 挂载点；测试时可以指到假目录
+CR_CGROOT=${CR_CGROOT:-/sys/fs/cgroup}
 
 MODULE_VERSION=$(sed -n 's/^version=//p' "$MODDIR/module.prop" 2>/dev/null | head -n 1)
 [ -n "$MODULE_VERSION" ] || MODULE_VERSION="unknown"
@@ -99,6 +101,18 @@ swap_total_mb() {
   _cr_kb=$(meminfo_kb SwapTotal)
   [ -n "$_cr_kb" ] || _cr_kb=0
   printf '%s' $((_cr_kb / 1024))
+}
+
+# 所有 zram 设备实际占用的内存（MB）：mm_stat 第 3 列 mem_used_total（字节）
+zram_used_mb() {
+  _cr_t=0
+  for _cr_z in /sys/block/zram*/mm_stat; do
+    [ -r "$_cr_z" ] || continue
+    read -r _cr_o _cr_c _cr_u _cr_rest <"$_cr_z"
+    case "$_cr_u" in ''|*[!0-9]*) continue ;; esac
+    _cr_t=$((_cr_t + _cr_u / 1048576))
+  done
+  printf '%s' "$_cr_t"
 }
 
 swap_free_mb() {
@@ -190,37 +204,69 @@ pid_pkg() {
   printf '%s' "$_cr_pkg"
 }
 
-# 冻结检测：Cirno 的 per-pid cgroup，其次从 /proc/<pid>/cgroup 推导
-pid_frozen() {
-  [ -d "/proc/$1" ] || return 1
+# ---------------------------------------------------------------- cgroup 布局
+# 应用进程的 per-pid cgroup 在不同 Android 版本 / ROM 上挂的位置不同：
+#   apps/uid_<uid>/pid_<pid>   新版 AOSP 与 HyperOS
+#   uid_<uid>/pid_<pid>        Android 12~14 的 AOSP 布局，部分 ROM 沿用
+# 只认 apps/ 的话，后一种布局上永远找不到冻结进程，模块会一直空转。
+# 结果写在 CR_CG_APPS（空 = 两种都没有）。
+cg_detect_layout() {
+  [ -n "${CR_CG_LAYOUT_DONE:-}" ] && return 0
+  CR_CG_LAYOUT_DONE=1
+  CR_CG_APPS=""
+  for _cr_root in "$CR_CGROOT/apps" "$CR_CGROOT"; do
+    for _cr_d in "$_cr_root"/uid_*; do
+      if [ -d "$_cr_d" ]; then
+        CR_CG_APPS=$_cr_root
+        return 0
+      fi
+    done
+  done
+  return 0
+}
+
+# 某个 pid 所在 cgroup 的目录（找不到输出空）
+pid_cg_dir() {
+  cg_detect_layout
   _cr_uid=$(pid_uid "$1")
-  if [ -n "$_cr_uid" ]; then
-    _cr_f="/sys/fs/cgroup/apps/uid_$_cr_uid/pid_$1/cgroup.freeze"
-    if [ -r "$_cr_f" ]; then
-      [ "$(cat "$_cr_f" 2>/dev/null)" = "1" ] && return 0
-    fi
+  if [ -n "$CR_CG_APPS" ] && [ -n "$_cr_uid" ] && [ -d "$CR_CG_APPS/uid_$_cr_uid/pid_$1" ]; then
+    printf '%s' "$CR_CG_APPS/uid_$_cr_uid/pid_$1"
+    return 0
   fi
   _cr_cg=$(awk -F: '$1 == "0" {print $3; exit}' "/proc/$1/cgroup" 2>/dev/null)
-  if [ -n "$_cr_cg" ]; then
-    _cr_f="/sys/fs/cgroup$_cr_cg/cgroup.freeze"
-    if [ -r "$_cr_f" ]; then
-      [ "$(cat "$_cr_f" 2>/dev/null)" = "1" ] && return 0
-    fi
+  case "$_cr_cg" in
+    ''|/) return 1 ;;
+  esac
+  [ -d "$CR_CGROOT$_cr_cg" ] || return 1
+  printf '%s' "$CR_CGROOT$_cr_cg"
+}
+
+# cgroup 目录是否处于冻结状态。
+# cgroup.events 的 frozen 字段是「实际」状态，冻结写在 uid_ 这一层时 pid_ 层的
+# cgroup.freeze 仍然是 0，只看 cgroup.freeze 会漏掉。
+# 扫描时每个 pid 都要调一次，只用 read 内建，不 fork。
+cg_dir_frozen() {
+  if [ -r "$1/cgroup.events" ]; then
+    while read -r _cr_k _cr_v; do
+      [ "$_cr_k" = "frozen" ] && [ "$_cr_v" = "1" ] && return 0
+    done <"$1/cgroup.events"
   fi
-  return 1
+  _cr_v=""
+  [ -r "$1/cgroup.freeze" ] && read -r _cr_v <"$1/cgroup.freeze"
+  [ "$_cr_v" = "1" ]
+}
+
+# 冻结检测：per-pid cgroup（两种布局都认），其次从 /proc/<pid>/cgroup 推导
+pid_frozen() {
+  [ -d "/proc/$1" ] || return 1
+  _cr_dir=$(pid_cg_dir "$1") || return 1
+  cg_dir_frozen "$_cr_dir"
 }
 
 pid_set_frozen() {
-  _cr_uid=$(pid_uid "$1")
-  _cr_f="/sys/fs/cgroup/apps/uid_$_cr_uid/pid_$1/cgroup.freeze"
-  if [ -w "$_cr_f" ]; then
-    printf '%s' "$2" >"$_cr_f" 2>/dev/null && return 0
-  fi
-  _cr_cg=$(awk -F: '$1 == "0" {print $3; exit}' "/proc/$1/cgroup" 2>/dev/null)
-  if [ -n "$_cr_cg" ] && [ -w "/sys/fs/cgroup$_cr_cg/cgroup.freeze" ]; then
-    printf '%s' "$2" >"/sys/fs/cgroup$_cr_cg/cgroup.freeze" 2>/dev/null && return 0
-  fi
-  return 1
+  _cr_dir=$(pid_cg_dir "$1") || return 1
+  [ -w "$_cr_dir/cgroup.freeze" ] || return 1
+  printf '%s' "$2" >"$_cr_dir/cgroup.freeze" 2>/dev/null
 }
 
 pids_of_pkg() {
@@ -270,7 +316,14 @@ com.android.incallui com.android.keychain com.android.certinstaller com.android.
 com.google.android.gms com.google.android.gsf com.google.android.permissioncontroller \
 com.android.permissioncontroller com.google.android.packageinstaller com.android.packageinstaller \
 com.topjohnwu.magisk me.weishu.kernelsu com.derq.ksunext com.sukisu.ultra me.bmax.apatch \
-io.github.a13e300.ksuwebui nep.timeline.cirno"
+io.github.a13e300.ksuwebui nep.timeline.cirno \
+com.rifsxd.ksunext io.github.vvb2060.magisk org.lsposed.manager moe.shizuku.privileged.api \
+com.android.launcher com.oppo.launcher com.oplus.athena com.oplus.battery com.oplus.deepthinker \
+com.oplus.cosa com.oplus.uiengine com.oplus.securitypermission com.coloros.securitypermission \
+com.coloros.safecenter com.oplus.safecenter com.coloros.phonemanager com.oplus.phonemanager \
+com.heytap.mcs com.heytap.htms com.heytap.openid com.coloros.ocs.opencapabilityservice \
+com.oplus.ocs com.oplus.appplatform com.oplus.exsystemservice com.oplus.wirelesssettings \
+com.coloros.wirelesssettings com.oplus.aod com.oplus.persist.system com.android.incallui"
 
 # 运行时补充的桌面 / 输入法（缓存到 state/ 里，避免每次都跑 dumpsys）
 protected_dynamic_load() {
@@ -308,6 +361,8 @@ in_list() {
       *) _cr_rest="" ;;
     esac
     [ -n "$_cr_pat" ] || continue
+    # 名单支持 * 通配，这里故意不加引号
+    # shellcheck disable=SC2254
     case "$1" in
       $_cr_pat) return 0 ;;
     esac
@@ -334,6 +389,14 @@ pkg_protected() {
 pkg_included() {
   [ -n "${include_packages:-}" ] || return 0
   in_list "$1" "$include_packages"
+}
+
+# ColorOS / OxygenOS / realme UI（同一套 OPlus 底层）
+# 这些系统自带「内存扩展」（zram + 写回存储），由系统自己管 swap 和回收参数。
+is_coloros() {
+  [ -n "$(getprop ro.build.version.oplusrom 2>/dev/null)" ] && return 0
+  [ -n "$(getprop ro.build.version.opporom 2>/dev/null)" ] && return 0
+  [ -d /my_product ]
 }
 
 # ---------------------------------------------------------------- 配置
@@ -367,7 +430,8 @@ cfg_defaults() {
   : "${drop_caches:=0}"
   : "${drop_caches_cooldown:=1800}"
   : "${deep_reclaim:=1}"
-  : "${deep_pageout_max_mb:=96}"
+  : "${deep_pageout_max_mb:=256}"
+  : "${reclaim_order:=pageout_first}"
   : "${allow_system_uid:=0}"
 
   # 名单：配置里通常有，这里只是兜底
@@ -385,8 +449,8 @@ cfg_defaults() {
   : "${app_pageout_passes:=3}"
   : "${app_proc_reclaim:=0}"
 
-  : "${vm_tune:=1}"
-  : "${zram_enable:=1}"
+  : "${vm_tune:=0}"
+  : "${zram_enable:=0}"
   : "${zram_disksize_mb:=0}"
   : "${zram_algorithm:=lz4}"
   : "${swapfile_enable:=0}"
@@ -425,12 +489,15 @@ cfg_value_type_ok() {
   case "$1" in
     include_packages|exclude_packages)
       case "$2" in
-        *[!A-Za-z0-9_.:;*/+=, -]*) return 1 ;;
+        *[!A-Za-z0-9_.:\;*/+=,\ -]*) return 1 ;;
       esac
       return 0
       ;;
     kill_mode)
       case "$2" in pid|am) return 0 ;; esac
+      ;;
+    reclaim_order)
+      case "$2" in pageout_first|kill_first) return 0 ;; esac
       ;;
     app_trim_level)
       case "$2" in RUNNING_MODERATE|RUNNING_LOW|RUNNING_CRITICAL) return 0 ;; esac
@@ -481,6 +548,7 @@ cfg_assign() {
     drop_caches_cooldown) drop_caches_cooldown=$2 ;;
     deep_reclaim) deep_reclaim=$2 ;;
     deep_pageout_max_mb) deep_pageout_max_mb=$2 ;;
+    reclaim_order) reclaim_order=$2 ;;
     allow_system_uid) allow_system_uid=$2 ;;
     app_reclaim) app_reclaim=$2 ;;
     app_pss_mb) app_pss_mb=$2 ;;
@@ -615,7 +683,7 @@ cfg_key_allowed() {
     high_pss_mb|high_pss_interval|max_kills_per_run|max_kills_per_hour|max_rounds|\
     cooldown_sec|min_process_mb|min_frozen_min|min_oom_score_adj|only_frozen|kill_mode|\
     protect_foreground|screen_off_only|drop_caches|drop_caches_cooldown|deep_reclaim|\
-    deep_pageout_max_mb|allow_system_uid|\
+    deep_pageout_max_mb|reclaim_order|allow_system_uid|\
     app_reclaim|app_pss_mb|app_reclaim_interval|app_reclaim_cooldown|app_trim_level|\
     app_trim_all_pids|app_pageout|app_pageout_max_mb|app_pageout_passes|app_proc_reclaim|\
     vm_tune|zram_enable|zram_disksize_mb|zram_algorithm|swapfile_enable|swapfile_mb|\
@@ -722,12 +790,17 @@ helper_ready() {
   return 1
 }
 
-# 换出某个进程的私有匿名页，成功时输出换出的字节数
+# 换出某个进程的私有匿名页，输出「实际」换出的字节数（按 VmSwap 差值）
+# $3 = art 时连 ART 堆一起换出，只给已冻结的进程用
 pageout_pid() {
   _cr_pid=$1
   _cr_max=${2:-64}
   helper_ready || return 2
-  "$HELPER" --pid "$_cr_pid" --max-mb "$_cr_max" 2>/dev/null
+  if [ "${3:-}" = "art" ]; then
+    "$HELPER" --pid "$_cr_pid" --max-mb "$_cr_max" --include-art 2>/dev/null
+  else
+    "$HELPER" --pid "$_cr_pid" --max-mb "$_cr_max" 2>/dev/null
+  fi
 }
 
 # ---------------------------------------------------------------- 进程管理

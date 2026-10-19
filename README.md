@@ -18,8 +18,9 @@
 > 跑过完整的自动化测试（`tests/sim.sh`，真实进程 + 真实 zram），**尚未在真机上验证**。
 > 首次安装默认是**演练模式**：只在日志里记录本来会做什么，不压缩、不结束任何进程。
 > 回滚：`touch /data/adb/modules/cirno_reclaim/disable` 后重启。
+> 请使用最新的v2.2.2
 > **状态**：v2.2.2。已通过 POSIX shell 静态检查、`node --check`、配置解析与打包结构校验，
-> **尚未在真机上完整验证**。首次刷入建议先设 `dry_run=1`、`zram_enable=0` 观察一轮，
+> **只在hyperos真机上完整验证**。首次刷入建议先设 `dry_run=1`、`zram_enable=0` 观察一轮，
 > 并先想好回滚方式（`touch /data/adb/modules/cirno_reclaim/disable` 后重启）。
 >
 > 审计与已知风险见 [SECURITY.md](SECURITY.md) 与 [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md)。

@@ -3,8 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0b1020">
-<title>Cirno Reclaim · ColorOS</title>
 <meta name="theme-color" id="metaTheme" content="#f4f5f7">
 <title>Cirno Reclaim</title>
 <link rel="stylesheet" href="style.css">
@@ -68,22 +66,6 @@
         </div>
       </div>
 
-    <div class="stat-grid">
-      <div class="card stat"><b id="stPaged">0</b><span>累计压缩 MB</span></div>
-      <div class="card stat"><b id="stKills">0</b><span>结束进程</span></div>
-      <div class="card stat"><b id="stFreed">0</b><span>累计释放 MB</span></div>
-      <div class="card stat"><b id="stHb">--</b><span>守护心跳</span></div>
-    </div>
-
-    <div class="btn-grid">
-      <button class="btn primary" id="btnRun">
-        <span class="btn-t">立即回收</span>
-        <span class="btn-s">先压缩冻结的应用，不够再结束</span>
-      </button>
-      <button class="btn" id="btnRelief">
-        <span class="btn-t">舒缓前台</span>
-        <span class="btn-s">trim + 页换出，不杀进程</span>
-      </button>
       <button class="pill" id="chipProfile">均衡</button>
 
       <div class="tiles">
@@ -155,7 +137,6 @@
           <b>激进</b><span>回收少就来这个，前台阈值更低</span><em>6 个/轮 · 2 分钟</em>
         </button>
       </div>
-      <p class="muted small mt8">三档都是「先压缩、不够再结束」。觉得还卡就选「激进」：更早动手、单次压缩更多。</p>
     </div>
 
     <div class="card">
@@ -177,13 +158,6 @@
   <!-- ============================ 外观 ============================ -->
   <section class="page" id="page-look">
 
-    <div class="card feedback-hero">
-      <h2>遇到问题？</h2>
-      <p class="muted">复制诊断信息，连同问题描述一起提到 GitHub Issue。</p>
-      <span class="mail" id="repoLink">github.com/yishisanren/cirno-reclaim</span>
-      <div class="btn-grid two mt12">
-        <button class="btn primary" id="btnCopyDiag">复制诊断信息</button>
-        <button class="btn ghost" id="btnCopyRepo">复制 Issue 链接</button>
     <div class="card">
       <div class="card-title">主题</div>
       <div class="seg" id="segTheme">
@@ -279,11 +253,6 @@
         <button class="btn ghost" id="btnCopyDiag">复制诊断</button>
       </div>
       <ul class="tips">
-        <li>手机型号、Android 版本、内核版本</li>
-        <li>用的是 Magisk / KernelSU / APatch，以及版本号</li>
-        <li>出现问题的场景（游戏、切后台、息屏、开机多久）</li>
-        <li>日志：概览页最下面的「运行日志」</li>
-        <li>诊断信息：点上面的「复制诊断信息」，粘贴到 Issue 里</li>
         <li>机型、Android / 内核版本、root 方案</li>
         <li>复现步骤：游戏 / 切后台 / 息屏 / 开机多久</li>
         <li>概览页的「运行日志」或「自检」输出</li>
@@ -293,8 +262,8 @@
     <div class="card">
       <div class="card-title">关于开源</div>
       <p class="muted small">
-        本项目以 GPL-3.0 开源。原作者 flyingr（Cirno Reclaim Hybrid），
-        ColorOS 17 适配分支：<span id="repoUrl">github.com/yishisanren/cirno-reclaim</span>
+        GPL-3.0 开源。仓库：<span id="repoUrl">github.com/flyingr/Cirno-Reclaim-Hybrid</span><br>
+        本模块不联网、不上传任何数据。
       </p>
     </div>
 

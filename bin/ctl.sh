@@ -68,7 +68,7 @@ status_json() {
   cg_detect_layout
   _cg=0
   [ -n "$CR_CG_APPS" ] && _cg=1
-  printf '{"ok":1,"version":"%s","avail":%s,"total":%s,"swap_total":%s,"swap_free":%s,"psi":%s,"daemon":%s,"watchdog":%s,"hb_age":%s,"wd_age":%s,"enable":%s,"dry_run":%s,"screen_off_only":%s,"mem_low":%s,"mem_target":%s,"total_freed":%s,"total_kills":%s,"total_app_freed":%s,"last_run":%s,"last_freed":%s,"last_kills":%s,"last_reason":"%s","last_avail":%s,"last_app_pkg":"%s","last_app_freed":%s,"pageout":%s,"profile":"%s","zram":%s,"swapfile":%s,"total_paged":%s,"last_paged":%s,"order":"%s","coloros":%s,"cgroup":%s}\n' \
+  printf '{"ok":1,"version":"%s","avail":%s,"total":%s,"swap_total":%s,"swap_free":%s,"psi":%s,"daemon":%s,"watchdog":%s,"hb_age":%s,"wd_age":%s,"enable":%s,"dry_run":%s,"screen_off_only":%s,"mem_low":%s,"mem_target":%s,"total_freed":%s,"total_kills":%s,"total_app_freed":%s,"last_run":%s,"last_freed":%s,"last_kills":%s,"last_reason":"%s","last_avail":%s,"last_app_pkg":"%s","last_app_freed":%s,"pageout":%s,"profile":"%s","zram":%s,"swapfile":%s,"total_paged":%s,"last_paged":%s,"order":"%s","coloros":%s,"cgroup":%s,"engine":"%s","config_ok":%s}\n' \
     "$MODULE_VERSION" \
     "$(mem_avail_mb)" "$(mem_total_mb)" "$(swap_total_mb)" "$(swap_free_mb)" \
     "$(psi_some_avg10)" "$_d" "$_w" "$_hb" "$_wd" \
@@ -80,7 +80,9 @@ status_json() {
     "$(st_read last_app_pkg)" "$(num "$(st_read last_app_freed)")" \
     "$_po" "${profile:-balanced}" "$(num "${zram_enable:-0}")" "$(num "${swapfile_enable:-0}")" \
     "$(num "$(st_read total_paged_mb)")" "$(num "$(st_read last_paged_mb)")" "${reclaim_order:-pageout_first}" \
-    "$(bool is_coloros)" "$_cg"
+    "$(bool is_coloros)" "$_cg" \
+    "$(if cpp_daemon_ready; then printf 'cpp'; elif [ -x "$CR_BIN/daemon.sh" ]; then printf 'shell'; else printf 'none'; fi)" \
+    "$(if [ -r "$CONF_FILE" ]; then printf '1'; else printf '0'; fi)"
 }
 
 status_text() {
@@ -334,7 +336,7 @@ do_diag() {
   printf 'kernel    : %s\n' "$(uname -r 2>/dev/null)"
   printf 'arch      : %s\n' "$(uname -m 2>/dev/null)"
   printf 'root      : %s\n' "$(root_info)"
-  printf 'daemon    : %s\n' "$(proc_healthy "$PID_FILE" daemon.sh && echo running || echo stopped)"
+  printf 'daemon    : %s\n' "$(proc_healthy "$PID_FILE" "$(daemon_cmdline_pat)" && echo running || echo stopped)"
   printf 'watchdog  : %s\n' "$(proc_healthy "$WD_PID_FILE" watchdog.sh && echo running || echo stopped)"
   if [ -x "$HELPER" ]; then
     printf 'pageout   : %s\n' "$("$HELPER" --probe 2>&1 | head -n 1)"

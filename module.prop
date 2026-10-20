@@ -1,0 +1,6 @@
+id=cirno_reclaim
+name=Cirno Reclaim Hybrid
+version=v2.3.4
+versionCode=20304
+author=flyingr
+description=Dual-platform memory reclaim for Cirno (HyperOS / ColorOS): page out frozen apps first and kill only when memory is still short, foreground relief gated by real memory pressure, OEM-managed zram left alone, dual cgroup layout support, and a low-power C++ daemon that only forks when the kernel is actually under pressure. Pick HyperOS/ColorOS with the volume keys at install. Supports Magisk, KernelSU and APatch. ColorOS 17 port ideas by yishisanren.

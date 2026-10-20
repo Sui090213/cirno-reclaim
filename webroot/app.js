@@ -1,6 +1,6 @@
 /* Cirno Reclaim Hybrid - WebUI
-   无框架、无外部请求。KernelSU / KsuWebUI 的 ksu.exec 是同步接口，
-   这里统一包一层，兼容返回 Promise 的版本。
+   无框架、无外部请求。命令统一走 execCmd：优先 KernelSU 的异步 ksu.exec，
+   老管理器退回同步接口（兼容返回 Promise 的版本）。
 
    设计要点：
    - 所有命令走 /system/bin/sh + 绝对路径，避免 WebUI 环境 PATH 不完整；
@@ -40,27 +40,47 @@
     };
   }
 
+  // 优先用 KernelSU 的异步 exec(cmd, options, callback)：同步的 exec(cmd) 在 KernelSU 系管理器里
+  // 只返回最后一行输出，多行的配置、日志读回来只剩一行，而且执行期间页面卡住。
+  // 没有异步接口的老管理器再退回同步版。
+  var cbSeq = 0;
+
+  function execCmd(cmd) {
+    return new Promise(function (resolve, reject) {
+      var name = 'crExecCb' + Date.now() + '_' + (cbSeq++);
+      var timer = setTimeout(function () {
+        delete window[name];
+        resolve({ errno: -1, stdout: '', stderr: '执行超时' });
+      }, 120000);
+      window[name] = function (errno, stdout, stderr) {
+        clearTimeout(timer);
+        delete window[name];
+        resolve({ errno: Number(errno) || 0, stdout: stdout || '', stderr: stderr || '' });
+      };
+      try {
+        window.ksu.exec(cmd, '{}', name);
+      } catch (e) {
+        clearTimeout(timer);
+        delete window[name];
+        try {
+          var r = window.ksu.exec(cmd);
+          if (r && typeof r.then === 'function') r.then(function (v) { resolve(norm(v)); }, reject);
+          else resolve(norm(r));
+        } catch (e2) {
+          reject(e2);
+        }
+      }
+    });
+  }
+
   function sh(args) {
     if (!isKsu) return Promise.reject(new Error('缺少 root 接口（请用 KernelSU / KsuWebUI 打开）'));
-    var line = SH + ' ' + CTL + ' ' + args;
-    try {
-      var r = window.ksu.exec(line);
-      if (r && typeof r.then === 'function') return r.then(norm);
-      return Promise.resolve(norm(r));
-    } catch (e) {
-      return Promise.reject(e);
-    }
+    return execCmd(SH + ' ' + CTL + ' ' + args);
   }
 
   function raw(script) {
     if (!isKsu) return Promise.reject(new Error('缺少 root 接口'));
-    try {
-      var r = window.ksu.exec(script);
-      if (r && typeof r.then === 'function') return r.then(norm);
-      return Promise.resolve(norm(r));
-    } catch (e) {
-      return Promise.reject(e);
-    }
+    return execCmd(script);
   }
 
   function q(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
@@ -439,8 +459,9 @@
       if (i <= 0) return;
       var k = l.slice(0, i).trim();
       var v = l.slice(i + 1).trim();
-      if (v.indexOf('#') > 0 && /[ \t]#/.test(v)) v = v.replace(/[ \t]#.*$/, '');
-      if (QUOTED[k]) v = v.replace(/^'(.*)'$/, '$1');
+      if (v.indexOf('#') > 0 && /[ \t]#/.test(v)) v = v.replace(/[ \t]#.*$/, '').trim();
+      // ctl.sh save / preset 把所有值都写成 key='value'，不只是名单类
+      v = v.replace(/^'(.*)'$/, '$1').replace(/^"(.*)"$/, '$1');
       out[k] = v;
     });
     return out;

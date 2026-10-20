@@ -63,6 +63,28 @@ double steady_seconds() {
   return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+// nanosleep() 要求 tv_nsec 严格小于 1e9。写成 1000*1000*1000 是非法值，
+// 内核直接返回 EINVAL 而完全不睡眠，主循环退化成每秒数千次系统调用的
+// 纯空转（单核 100%、持续发热）。这里统一把"秒数"规范化后再睡，
+// 调用方只需要关心要睡多久。
+bool sleep_seconds(double sec) {
+  if (!(sec > 0.0)) return true;
+  if (sec > 3600.0) sec = 3600.0;
+  struct timespec ts;
+  ts.tv_sec = (time_t)sec;
+  ts.tv_nsec = (long)((sec - (double)ts.tv_sec) * 1e9);
+  if (ts.tv_nsec < 0) ts.tv_nsec = 0;
+  if (ts.tv_nsec >= 1000000000L) {
+    ts.tv_sec += 1;
+    ts.tv_nsec -= 1000000000L;
+  }
+  while (nanosleep(&ts, &ts) != 0) {
+    if (errno != EINTR) return false;
+    if (g_stop) return true;
+  }
+  return true;
+}
+
 bool file_exists(const char *p) {
   struct stat st;
   return stat(p, &st) == 0;
@@ -470,8 +492,7 @@ int main(int argc, char **argv) {
     spawn_child("reclaim", kReclaimScript, "--run", nullptr, 120);
     while (!g_children.empty()) {
       reap_children();
-      struct timespec ts = {0, 200 * 1000 * 1000};
-      nanosleep(&ts, nullptr);
+      sleep_seconds(0.2);
     }
     return 0;
   }
@@ -550,8 +571,19 @@ int main(int argc, char **argv) {
 
     reap_children();
 
-    struct timespec ts = {0, 1000 * 1000 * 1000};
-    nanosleep(&ts, nullptr);
+    // 睡到下一个待办事件为止（最多 2 秒，最少 0.2 秒）。
+    // tv_nsec 不能用 1e9，那是非法值，nanosleep 会立刻 EINVAL，
+    // 主循环就变成 100% CPU 的空转。
+    double wake = now + 2.0;
+    if (next_hb < wake) wake = next_hb;
+    if (cfg.enable) {
+      if (next_reclaim < wake) wake = next_reclaim;
+      if (cfg.high_pss_mb > 0 && next_high < wake) wake = next_high;
+      if (cfg.app_reclaim && next_app < wake) wake = next_app;
+    }
+    double nap = wake - steady_seconds();
+    if (nap < 0.2) nap = 0.2;
+    sleep_seconds(nap);
   }
 
   for (size_t i = 0; i < g_children.size(); i++) {
@@ -559,8 +591,7 @@ int main(int argc, char **argv) {
   }
   for (int i = 0; i < 30 && !g_children.empty(); i++) {
     reap_children();
-    struct timespec ts = {0, 100 * 1000 * 1000};
-    nanosleep(&ts, nullptr);
+    sleep_seconds(0.1);
   }
 
   std::string cur = read_pid_file(kPidFile);

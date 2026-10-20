@@ -46,6 +46,9 @@ BASHISMS = [
     (re.compile(r"^\s*local\s+-\w"), "warn", "local -options 不是 POSIX"),
     # mksh 会把 case 模式方括号里的 ; 当命令分隔符，导致整份脚本语法错误
     (re.compile(r"\[[^\]\n]*;[^\]\n]*\]"), "error", "mksh: 方括号模式里不能出现 ;"),
+    # mksh 把 ${v%%|*} 里的 | 当成模式的「或」，取出空串；必须写成 \|
+    (re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?:%%|%|##|#)[^}\n]*(?<!\\)\|"), "error",
+     "mksh: ${var%...} / ${var#...} 模式里的 | 要写成 \\|"),
 ]
 
 DELIMS = " \t\n;|&("

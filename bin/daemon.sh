@@ -12,7 +12,7 @@ cfg_load
 protect_self
 
 # 单实例（mkdir 原子锁，pid 文件只用于展示/兼容）
-if ! lock_acquire "$LOCK_DAEMON" daemon.sh; then
+if ! lock_acquire "$LOCK_DAEMON" "$(daemon_cmdline_pat)"; then
   log "daemon already running (lock held), exit"
   exit 0
 fi
@@ -82,6 +82,15 @@ while :; do
 
   heartbeat_write
   _now=$(date +%s)
+
+  # pid 文件被误删 / 改写时补回（只在仍持有锁时），
+  # 否则 watchdog 和 service 会一直判定「守护不在」，每 30 秒拉起一次又因锁被占而退出
+  if [ "$(cat "$PID_FILE" 2>/dev/null)" != "$$" ] &&
+    [ "$(cat "$LOCK_DAEMON/pid" 2>/dev/null)" = "$$" ]; then
+    printf '%s' "$$" >"$PID_FILE" 2>/dev/null
+    chmod 600 "$PID_FILE" 2>/dev/null
+    log "daemon pidfile restored pid=$$"
+  fi
 
   # 定期刷新输入法 / 桌面保护名单、清理冻结记录
   if [ $((_now - _last_protect)) -ge 1800 ]; then

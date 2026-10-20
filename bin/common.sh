@@ -964,15 +964,25 @@ daemon_cmdline_pat() {
   printf '%s' "/bin/cirno_daemon|/bin/daemon.sh"
 }
 
+# 静态 musl 编的 cirno_daemon 读不到 Android 的时区数据，localtime 会退回 UTC，
+# 日志时间和脚本差几个小时。按当前偏移给它一个 POSIX TZ（+0800 → UTC-08:00，符号与 ISO 相反）；
+# 夏令时切换要等守护重启才跟上
+posix_tz() {
+  date +%z 2>/dev/null | sed -n \
+    -e 's/^+\([0-9][0-9]\)\([0-9][0-9]\)$/UTC-\1:\2/p' \
+    -e 's/^-\([0-9][0-9]\)\([0-9][0-9]\)$/UTC+\1:\2/p'
+}
+
 start_daemon() {
   _pat=$(daemon_cmdline_pat)
   is_running_pidfile "$PID_FILE" "$_pat" && return 0
   rm -f "$PID_FILE" 2>/dev/null
   if cpp_daemon_ready; then
+    _tz=${TZ:-$(posix_tz)}
     if command -v setsid >/dev/null 2>&1; then
-      setsid "$CR_BIN/cirno_daemon" >/dev/null 2>&1 &
+      TZ=$_tz setsid "$CR_BIN/cirno_daemon" >/dev/null 2>&1 &
     else
-      ( "$CR_BIN/cirno_daemon" >/dev/null 2>&1 & )
+      ( TZ=$_tz "$CR_BIN/cirno_daemon" >/dev/null 2>&1 & )
     fi
   elif command -v setsid >/dev/null 2>&1; then
     setsid sh "$CR_BIN/daemon.sh" >/dev/null 2>&1 &

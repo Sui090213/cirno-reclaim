@@ -183,8 +183,11 @@ collect_candidates() {
   _min_age=$(( ${min_frozen_min:-5} * 60 ))
   _fg=""
   [ "${protect_foreground:-1}" = "1" ] && _fg=$(fg_pkg_cached)
-  # 桌面 / 输入法保护名单平时由 daemon 刷新；手动回收可能抢在它前面，缺了就现取一次
-  [ -r "$STATE_DIR/protect.dynamic" ] || protected_dynamic_refresh
+  # 桌面 / 输入法保护名单：缺失或超过 30 分钟就重取。
+  # C++ 守护不做这件事，shell 守护每 30 分钟刷一次，这里两种引擎都兜住
+  if [ ! -r "$STATE_DIR/protect.dynamic" ] || [ "$(since_epoch_file protect.ts)" -ge 1800 ]; then
+    protected_dynamic_refresh
+  fi
 
   if [ "${only_frozen:-1}" = "1" ]; then
     # 布局存在就只用 cgroup 枚举。没有候选是正常现象，

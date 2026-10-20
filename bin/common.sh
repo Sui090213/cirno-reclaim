@@ -351,6 +351,7 @@ protected_dynamic_refresh() {
   esac
   printf '%s' "${_cr_out# }" >"$STATE_DIR/protect.dynamic" 2>/dev/null
   chmod 600 "$STATE_DIR/protect.dynamic" 2>/dev/null
+  date +%s >"$STATE_DIR/protect.ts" 2>/dev/null
   return 0
 }
 

@@ -359,7 +359,10 @@ bool acquire_lock() {
 
   std::string owner_text = read_pid_file(lock_pid.c_str());
   int owner = atoi(owner_text.c_str());
-  if (owner > 0 && pid_alive((pid_t)owner) && cmdline_has((pid_t)owner, "cirno_daemon")) {
+  // shell 守护（daemon_engine=shell 时的 daemon.sh）也是合法持有者：
+  // 切换引擎后、重启之前旧引擎还在跑，不能把它的锁当成陈旧锁抢走
+  if (owner > 0 && pid_alive((pid_t)owner) &&
+      (cmdline_has((pid_t)owner, "cirno_daemon") || cmdline_has((pid_t)owner, "/bin/daemon.sh"))) {
     return false;
   }
 
@@ -383,6 +386,17 @@ void release_lock() {
 void write_heartbeat() {
   std::string now = std::to_string((long)time(nullptr));
   write_file(kHeartbeat, now, 0600);
+}
+
+// pid 文件被误删 / 改写时补回（只在仍持有锁时），
+// 否则 watchdog 和 service 会一直判定「守护不在」，每 30 秒拉起一次又因锁被占而退出
+void restore_pidfile() {
+  std::string me = std::to_string((long)getpid());
+  if (read_pid_file(kPidFile) == me) return;
+  std::string lock_pid = std::string(kLockDir) + "/pid";
+  if (read_pid_file(lock_pid.c_str()) != me) return;
+  write_file(kPidFile, me, 0600);
+  log_line("cpp-daemon: pidfile restored pid=%d", (int)getpid());
 }
 
 void protect_self(const Config &c) {
@@ -525,6 +539,7 @@ int main(int argc, char **argv) {
 
     if (now >= next_hb) {
       write_heartbeat();
+      restore_pidfile();
       next_hb = now + 5;
     }
 

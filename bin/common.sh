@@ -916,9 +916,22 @@ pageout_pid() {
 
 # ---------------------------------------------------------------- 进程管理
 # 判断某个 pid 的命令行是否包含关键字（防止 pid 复用导致误判存活）
+# $2 可以用 | 分隔多个候选，任一命中即可（按固定字符串比较）
 proc_cmdline_has() {
   [ -n "$1" ] && [ -r "/proc/$1/cmdline" ] || return 1
-  tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null | grep -qF -- "$2"
+  _cr_cl=$(tr '\0' ' ' <"/proc/$1/cmdline" 2>/dev/null)
+  _cr_alts=$2
+  # 注意：参数展开里的 | 必须转义。mksh 把 ${v%%|*} 当成「空 或 *」，
+  # 取出空串，case 就会匹配任何命令行（busybox / dash 没这个问题）
+  while :; do
+    case "$_cr_cl" in
+      *"${_cr_alts%%\|*}"*) return 0 ;;
+    esac
+    case "$_cr_alts" in
+      *'|'*) _cr_alts=${_cr_alts#*\|} ;;
+      *) return 1 ;;
+    esac
+  done
 }
 
 # $2 = 可选命令行关键字；给了就必须匹配，避免 pid 复用导致误判存活
@@ -944,12 +957,11 @@ cpp_daemon_ready() {
 }
 
 # 当前引擎对应的命令行关键字（用于 pid 存活校验）
+# 判断「守护进程」时两种引擎都认：切换 daemon_engine 后、重启之前，旧引擎还在跑，
+# 只认新引擎会停不掉旧进程、还会把它持有的锁当成陈旧锁抢走，变成两个守护同时运行。
+# 具体拉起哪一种由 start_daemon 按 cpp_daemon_ready 决定。
 daemon_cmdline_pat() {
-  if cpp_daemon_ready; then
-    printf '%s' "cirno_daemon"
-  else
-    printf '%s' "daemon.sh"
-  fi
+  printf '%s' "/bin/cirno_daemon|/bin/daemon.sh"
 }
 
 start_daemon() {
@@ -984,6 +996,12 @@ start_watchdog() {
   return 0
 }
 
+# pid 文件内容仍是 $2 时才删除
+pidfile_drop_if() {
+  [ "$(cat "$1" 2>/dev/null)" = "$2" ] && rm -f "$1" 2>/dev/null
+  return 0
+}
+
 stop_pidfile() {
   # $1 = pid 文件, $2 = 名字, $3 = 可选命令行关键字
   _cr_f=$1
@@ -992,12 +1010,12 @@ stop_pidfile() {
   [ -r "$_cr_f" ] || return 0
   _cr_p=$(cat "$_cr_f" 2>/dev/null)
   case "$_cr_p" in
-    ''|*[!0-9]*) rm -f "$_cr_f"; return 0 ;;
+    ''|*[!0-9]*) pidfile_drop_if "$_cr_f" "$_cr_p"; return 0 ;;
   esac
   # pid 可能被系统复用：命令行对不上就只删 pid 文件，绝不误杀
   if [ -n "$_cr_pat" ] && ! proc_cmdline_has "$_cr_p" "$_cr_pat"; then
     log "drop stale $_cr_name pidfile (pid=$_cr_p is not $_cr_pat)"
-    rm -f "$_cr_f" 2>/dev/null
+    pidfile_drop_if "$_cr_f" "$_cr_p"
     return 0
   fi
   if pid_alive "$_cr_p"; then
@@ -1010,7 +1028,9 @@ stop_pidfile() {
     pid_alive "$_cr_p" && kill -KILL "$_cr_p" 2>/dev/null
     log "stopped $_cr_name pid=$_cr_p"
   fi
-  rm -f "$_cr_f" 2>/dev/null
+  # 等旧进程退出的这几秒里，service / watchdog 可能已经拉起新进程并写了自己的 pid；
+  # 无条件删除会删掉新进程的 pid 文件，之后每 30 秒误判「守护不在」并反复拉起
+  pidfile_drop_if "$_cr_f" "$_cr_p"
   return 0
 }
 

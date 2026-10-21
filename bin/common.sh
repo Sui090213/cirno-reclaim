@@ -1273,20 +1273,42 @@ daemon_cmdline_pat() {
   fi
 }
 
+# cirno_daemon 是 zig cc 静态编译的 musl 二进制，读不了 Android 私有的
+# /system/usr/share/zoneinfo/tzdata（那是 Android 自定义格式），TZ 只认 POSIX 串
+# （例如 UTC-8）。不给的话 localtime_r 一律按 UTC 记日志，比 bionic 的 date 慢 8 小时，
+# 排查时两边的日志时间对不上。这里按当前偏移算一个 POSIX TZ 串，只传给守护进程，
+# 不改 shell 侧的 TZ，免得 %Z 从 CST 变成 UTC-8。
+cr_daemon_tz() {
+  _cr_z=$(date +%z 2>/dev/null)
+  case "$_cr_z" in
+    [+-][0-9][0-9][0-9][0-9])
+      printf '%s\n' "$_cr_z" | awk '{
+        inv = (substr($0, 1, 1) == "+") ? "-" : "+"
+        h = substr($0, 2, 2) + 0
+        m = substr($0, 4, 2) + 0
+        if (m > 0) printf "UTC%s%d:%02d", inv, h, m
+        else printf "UTC%s%d", inv, h
+      }'
+      ;;
+    *) printf '%s' 'UTC' ;;
+  esac
+}
+
 start_daemon() {
   _pat=$(daemon_cmdline_pat)
   is_running_pidfile "$PID_FILE" "$_pat" && return 0
   rm -f "$PID_FILE" 2>/dev/null
+  _cr_tz=$(cr_daemon_tz)
   if cpp_daemon_ready; then
     if command -v setsid >/dev/null 2>&1; then
-      setsid "$CR_BIN/cirno_daemon" >/dev/null 2>&1 &
+      env TZ="$_cr_tz" setsid "$CR_BIN/cirno_daemon" >/dev/null 2>&1 &
     else
-      ( "$CR_BIN/cirno_daemon" >/dev/null 2>&1 & )
+      ( env TZ="$_cr_tz" "$CR_BIN/cirno_daemon" >/dev/null 2>&1 & )
     fi
   elif command -v setsid >/dev/null 2>&1; then
-    setsid sh "$CR_BIN/daemon.sh" >/dev/null 2>&1 &
+    env TZ="$_cr_tz" setsid sh "$CR_BIN/daemon.sh" >/dev/null 2>&1 &
   else
-    ( sh "$CR_BIN/daemon.sh" >/dev/null 2>&1 & )
+    ( env TZ="$_cr_tz" sh "$CR_BIN/daemon.sh" >/dev/null 2>&1 & )
   fi
   sleep 1
   return 0

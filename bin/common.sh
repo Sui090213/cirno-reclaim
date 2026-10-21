@@ -1353,6 +1353,13 @@ stop_pidfile() {
     pid_alive "$_cr_p" && kill -KILL "$_cr_p" 2>/dev/null
     log "stopped $_cr_name pid=$_cr_p"
   fi
+  # 停止期间可能已经有新实例把新的 pid 写进同一个 pidfile（并已重新拿到锁），
+  # 那种情况下不能删，否则 supervisor 会以为进程不见了、每 30s 反复拉起。
+  _cr_now=$(cat "$_cr_f" 2>/dev/null)
+  if [ -n "$_cr_now" ] && [ "$_cr_now" != "$_cr_p" ] && pid_alive "$_cr_now"; then
+    log "keep $_cr_name pidfile (new pid=$_cr_now)"
+    return 0
+  fi
   rm -f "$_cr_f" 2>/dev/null
   return 0
 }

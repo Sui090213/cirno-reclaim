@@ -1,6 +1,8 @@
 <div align="center">
 
 # Cirno Reclaim Hybrid
+此仓库已经废弃，请到新仓库
+https://github.com/Sui090213/CirnoRecyclePlus
 
 **把「冻结但不释放」的后台内存真正拿回来，同时把前台应用的内存压下去**
 
